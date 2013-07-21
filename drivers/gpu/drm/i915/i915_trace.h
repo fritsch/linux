@@ -156,9 +156,11 @@ TRACE_EVENT(i915_vma_unbind,
 		      __entry->obj, __entry->offset, __entry->size, __entry->vm)
 );
 
-TRACE_EVENT(i915_gem_object_change_domain,
+TRACE_EVENT_CONDITION(i915_gem_object_change_domain,
 	    TP_PROTO(struct drm_i915_gem_object *obj, u32 old_read, u32 old_write),
 	    TP_ARGS(obj, old_read, old_write),
+
+	    TP_CONDITION((old_read ^ obj->base.read_domains) | (old_write ^ obj->base.write_domain)),
 
 	    TP_STRUCT__entry(
 			     __field(struct drm_i915_gem_object *, obj)
