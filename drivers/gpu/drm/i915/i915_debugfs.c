@@ -479,6 +479,61 @@ static int i915_gem_object_info(struct seq_file *m, void* data)
 	return 0;
 }
 
+static int i915_gem_gtt_contents(struct seq_file *m, struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	gen6_gtt_pte_t __iomem *gtt_entries;
+	gen6_gtt_pte_t scratch_pte;
+	gen6_gtt_pte_t zero[8] = {};
+	int i, j, last_zero = 0;
+	int ret;
+
+	if (INTEL_INFO(dev)->gen < 6)
+		return 0;
+
+	ret = mutex_lock_interruptible(&dev->struct_mutex);
+	if (ret)
+		return ret;
+
+	gtt_entries = (gen6_gtt_pte_t __iomem *)dev_priv->gtt.gsm;
+	scratch_pte = dev_priv->gtt.base.pte_encode(dev_priv->gtt.base.scratch.addr, I915_CACHE_LLC, true, 0);
+	for (i = 0; i < gtt_total_entries(dev_priv->gtt); i += 8) {
+		gen6_gtt_pte_t pte[8];
+		int this_zero;
+
+		for (j = 0; j < 8; j++) {
+			pte[j] = ioread32(&gtt_entries[i+j]);
+			if (pte[j] == scratch_pte)
+				pte[j] = 0;
+			if ((pte[j] & 1) == 0)
+				pte[j] = 0;
+		}
+
+		this_zero = memcmp(pte, zero, sizeof(pte)) == 0;
+		if (last_zero && this_zero) {
+			if (last_zero++ == 1)
+				seq_puts(m, "...\n");
+			continue;
+		}
+
+		seq_printf(m, "[%08x] %08x %08x %08x %08x %08x %08x %08x %08x\n",
+			   i, pte[0], pte[1], pte[2], pte[3], pte[4], pte[5], pte[6], pte[7]);
+		last_zero = this_zero;
+	}
+
+	mutex_unlock(&dev->struct_mutex);
+
+	return 0;
+}
+
+static int obj_rank_by_ggtt(void *priv, struct list_head *A, struct list_head *B)
+{
+	struct drm_i915_gem_object *a = list_entry(A, typeof(*a), obj_exec_link);
+	struct drm_i915_gem_object *b = list_entry(B, typeof(*b), obj_exec_link);
+
+	return i915_gem_obj_ggtt_offset(a) - i915_gem_obj_ggtt_offset(b);
+}
+
 static int i915_gem_gtt_info(struct seq_file *m, void *data)
 {
 	struct drm_info_node *node = m->private;
@@ -486,6 +541,7 @@ static int i915_gem_gtt_info(struct seq_file *m, void *data)
 	uintptr_t list = (uintptr_t) node->info_ent->data;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_i915_gem_object *obj;
+	struct list_head sorted;
 	size_t total_obj_size, total_gtt_size;
 	int count, ret;
 
@@ -493,10 +549,21 @@ static int i915_gem_gtt_info(struct seq_file *m, void *data)
 	if (ret)
 		return ret;
 
+	INIT_LIST_HEAD(&sorted);
+
 	total_obj_size = total_gtt_size = count = 0;
 	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
 		if (list == PINNED_LIST && !i915_gem_obj_is_pinned(obj))
 			continue;
+
+		list_add(&obj->obj_exec_link, &sorted);
+	}
+
+	list_sort(NULL, &sorted, obj_rank_by_ggtt);
+
+	while (!list_empty(&sorted)) {
+		obj = list_first_entry(&sorted, typeof(*obj), obj_exec_link);
+		list_del_init(&obj->obj_exec_link);
 
 		seq_puts(m, "   ");
 		describe_obj(m, obj);
@@ -511,7 +578,10 @@ static int i915_gem_gtt_info(struct seq_file *m, void *data)
 	seq_printf(m, "Total %d objects, %zu bytes, %zu GTT size\n",
 		   count, total_obj_size, total_gtt_size);
 
-	return 0;
+	if (list == PINNED_LIST)
+		return 0;
+
+	return i915_gem_gtt_contents(m, dev);
 }
 
 static int i915_gem_pageflip_info(struct seq_file *m, void *data)
