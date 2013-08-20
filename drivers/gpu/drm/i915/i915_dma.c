@@ -902,6 +902,7 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 		intel_gpu_ips_init(dev_priv);
 
 	intel_runtime_pm_enable(dev_priv);
+	i915_perf_register(dev);
 
 	return 0;
 
@@ -949,6 +950,7 @@ int i915_driver_unload(struct drm_device *dev)
 		return ret;
 	}
 
+	i915_perf_unregister(dev);
 	intel_power_domains_fini(dev_priv);
 
 	intel_gpu_ips_teardown();

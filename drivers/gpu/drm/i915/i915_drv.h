@@ -47,6 +47,7 @@
 #include <linux/hashtable.h>
 #include <linux/intel-iommu.h>
 #include <linux/kref.h>
+#include <linux/perf_event.h>
 #include <linux/pm_qos.h>
 
 /* General customization:
@@ -1525,6 +1526,14 @@ struct i915_workarounds {
 	u32 count;
 };
 
+enum {
+	__I915_SAMPLE_FREQ_ACT = 0,
+	__I915_SAMPLE_FREQ_REQ,
+	__I915_SAMPLE_INSTDONE_0,
+	__I915_SAMPLE_INSTDONE_63 = __I915_SAMPLE_INSTDONE_0 + 63,
+	__I915_NUM_PMU_SAMPLERS
+};
+
 struct drm_i915_private {
 	struct drm_device *dev;
 	struct kmem_cache *slab;
@@ -1772,6 +1781,14 @@ struct drm_i915_private {
 	struct workqueue_struct *dp_wq;
 
 	uint32_t bios_vgacntr;
+
+	struct {
+		struct pmu base;
+		struct hrtimer timer;
+		u64 enable;
+		u64 instdone;
+		u64 sample[__I915_NUM_PMU_SAMPLERS];
+	} pmu;
 
 	/* Old ums support infrastructure, same warning applies. */
 	struct i915_ums_state ums;
@@ -2922,6 +2939,15 @@ int i915_parse_cmds(struct intel_engine_cs *engine,
 		    struct drm_i915_gem_object *batch_obj,
 		    u32 batch_start_offset,
 		    bool is_master);
+
+/* i915_perf.c */
+#ifdef CONFIG_PERF_EVENTS
+extern void i915_perf_register(struct drm_device *dev);
+extern void i915_perf_unregister(struct drm_device *dev);
+#else
+static inline void i915_perf_register(struct drm_device *dev) {}
+static inline void i915_perf_unregister(struct drm_device *dev) {}
+#endif
 
 /* i915_suspend.c */
 extern int i915_save_state(struct drm_device *dev);

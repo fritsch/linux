@@ -269,6 +269,8 @@ struct intel_engine_cs {
 	 */
 	struct list_head vma_list, read_list, write_list, fence_list;
 
+	u64 pmu_sample[3];
+
 	wait_queue_head_t irq_queue;
 
 	struct intel_context *default_context;
