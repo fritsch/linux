@@ -739,6 +739,9 @@ extern int	ohci_setup(struct usb_hcd *hcd);
 #ifdef CONFIG_PM
 extern int	ohci_suspend(struct usb_hcd *hcd, bool do_wakeup);
 extern int	ohci_resume(struct usb_hcd *hcd, bool hibernated);
+#else
+static inline int	ohci_suspend(struct usb_hcd *hcd, bool do_wakeup) {return 0;}
+static inline int	ohci_resume(struct usb_hcd *hcd, bool hibernated) {return 0;}
 #endif
 extern int	ohci_hub_control(struct usb_hcd	*hcd, u16 typeReq, u16 wValue,
 				 u16 wIndex, char *buf, u16 wLength);
