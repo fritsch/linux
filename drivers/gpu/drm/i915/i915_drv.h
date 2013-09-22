@@ -1586,11 +1586,12 @@ struct drm_i915_private {
 	/* DPIO indirect register protection */
 	struct mutex dpio_lock;
 
-	/** Cached value of IMR to avoid reads in updating the bitfield */
+	/** Cached value of IMR/IER to avoid reads in updating the bitfield */
 	union {
 		u32 irq_mask;
 		u32 de_irq_mask[I915_MAX_PIPES];
 	};
+	u32 irq_enable;
 	u32 gt_irq_mask;
 	u32 pm_irq_mask;
 	u32 pipestat_irq_mask[I915_MAX_PIPES];

@@ -2088,7 +2088,7 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 {
 	struct drm_device *dev = arg;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	u32 de_iir, gt_iir, de_ier, sde_ier = 0;
+	u32 de_iir, gt_iir;
 	irqreturn_t ret = IRQ_NONE;
 
 	/* We get interrupts on unclaimed registers, so check for this before we
@@ -2096,20 +2096,15 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 	intel_uncore_check_errors(dev);
 
 	/* disable master interrupt before clearing iir  */
-	de_ier = I915_READ(DEIER);
-	I915_WRITE(DEIER, de_ier & ~DE_MASTER_IRQ_CONTROL);
-	POSTING_READ(DEIER);
+	I915_WRITE(DEIER, dev_priv->irq_enable & ~DE_MASTER_IRQ_CONTROL);
 
 	/* Disable south interrupts. We'll only write to SDEIIR once, so further
 	 * interrupts will will be stored on its back queue, and then we'll be
 	 * able to process them after we restore SDEIER (as soon as we restore
 	 * it, we'll get an interrupt if SDEIIR still has something to process
 	 * due to its back queue). */
-	if (!HAS_PCH_NOP(dev)) {
-		sde_ier = I915_READ(SDEIER);
+	if (!HAS_PCH_NOP(dev))
 		I915_WRITE(SDEIER, 0);
-		POSTING_READ(SDEIER);
-	}
 
 	/* Find, clear, then process each source of interrupt */
 
@@ -2142,12 +2137,10 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 		}
 	}
 
-	I915_WRITE(DEIER, de_ier);
+	if (!HAS_PCH_NOP(dev))
+		I915_WRITE(SDEIER, ~0);
+	I915_WRITE(DEIER, dev_priv->irq_enable);
 	POSTING_READ(DEIER);
-	if (!HAS_PCH_NOP(dev)) {
-		I915_WRITE(SDEIER, sde_ier);
-		POSTING_READ(SDEIER);
-	}
 
 	return ret;
 }
@@ -3258,6 +3251,7 @@ static int ironlake_irq_postinstall(struct drm_device *dev)
 	}
 
 	dev_priv->irq_mask = ~display_mask;
+	dev_priv->irq_enable = display_mask | extra_mask;
 
 	I915_WRITE(HWSTAM, 0xeffe);
 
