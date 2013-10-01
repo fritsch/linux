@@ -45,6 +45,20 @@
  * and related files, but that will be described in separate chapters.
  */
 
+#define __raw_i915_read8(dev_priv__, reg__) readb((dev_priv__)->regs + (reg__))
+#define __raw_i915_write8(dev_priv__, reg__, val__) writeb(val__, (dev_priv__)->regs + (reg__))
+
+#define __raw_i915_read16(dev_priv__, reg__) readw((dev_priv__)->regs + (reg__))
+#define __raw_i915_write16(dev_priv__, reg__, val__) writew(val__, (dev_priv__)->regs + (reg__))
+
+#define __raw_i915_read32(dev_priv__, reg__) readl((dev_priv__)->regs + (reg__))
+#define __raw_i915_write32(dev_priv__, reg__, val__) writel(val__, (dev_priv__)->regs + (reg__))
+
+#define __raw_i915_read64(dev_priv__, reg__) readq((dev_priv__)->regs + (reg__))
+#define __raw_i915_write64(dev_priv__, reg__, val__) writeq(val__, (dev_priv__)->regs + (reg__))
+
+#define __raw_i915_posting_read(dev_priv__, reg__) (void)__raw_i915_read32(dev_priv__, reg__)
+
 static const u32 hpd_ibx[] = {
 	[HPD_CRT] = SDE_CRT_HOTPLUG,
 	[HPD_SDVO_B] = SDE_SDVOB_HOTPLUG,
@@ -2096,7 +2110,7 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 	intel_uncore_check_errors(dev);
 
 	/* disable master interrupt before clearing iir  */
-	I915_WRITE(DEIER, dev_priv->irq_enable & ~DE_MASTER_IRQ_CONTROL);
+	__raw_i915_write32(dev_priv, DEIER, dev_priv->irq_enable & ~DE_MASTER_IRQ_CONTROL);
 
 	/* Disable south interrupts. We'll only write to SDEIIR once, so further
 	 * interrupts will will be stored on its back queue, and then we'll be
@@ -2104,13 +2118,13 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 	 * it, we'll get an interrupt if SDEIIR still has something to process
 	 * due to its back queue). */
 	if (!HAS_PCH_NOP(dev))
-		I915_WRITE(SDEIER, 0);
+		__raw_i915_write32(dev_priv, SDEIER, 0);
 
 	/* Find, clear, then process each source of interrupt */
 
-	gt_iir = I915_READ(GTIIR);
+	gt_iir = __raw_i915_read32(dev_priv, GTIIR);
 	if (gt_iir) {
-		I915_WRITE(GTIIR, gt_iir);
+		__raw_i915_write32(dev_priv, GTIIR, gt_iir);
 		ret = IRQ_HANDLED;
 		if (INTEL_INFO(dev)->gen >= 6)
 			snb_gt_irq_handler(dev, dev_priv, gt_iir);
@@ -2118,9 +2132,9 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 			ilk_gt_irq_handler(dev, dev_priv, gt_iir);
 	}
 
-	de_iir = I915_READ(DEIIR);
+	de_iir = __raw_i915_read32(dev_priv, DEIIR);
 	if (de_iir) {
-		I915_WRITE(DEIIR, de_iir);
+		__raw_i915_write32(dev_priv, DEIIR, de_iir);
 		ret = IRQ_HANDLED;
 		if (INTEL_INFO(dev)->gen >= 7)
 			ivb_display_irq_handler(dev, de_iir);
@@ -2129,18 +2143,18 @@ static irqreturn_t ironlake_irq_handler(int irq, void *arg)
 	}
 
 	if (INTEL_INFO(dev)->gen >= 6) {
-		u32 pm_iir = I915_READ(GEN6_PMIIR);
+		u32 pm_iir = __raw_i915_read32(dev_priv, GEN6_PMIIR);
 		if (pm_iir) {
-			I915_WRITE(GEN6_PMIIR, pm_iir);
+			__raw_i915_write32(dev_priv, GEN6_PMIIR, pm_iir);
 			ret = IRQ_HANDLED;
 			gen6_rps_irq_handler(dev_priv, pm_iir);
 		}
 	}
 
+	__raw_i915_write32(dev_priv, DEIER, dev_priv->irq_enable);
 	if (!HAS_PCH_NOP(dev))
-		I915_WRITE(SDEIER, ~0);
-	I915_WRITE(DEIER, dev_priv->irq_enable);
-	POSTING_READ(DEIER);
+		__raw_i915_write32(dev_priv, SDEIER, ~0);
+	__raw_i915_posting_read(dev_priv, DEIER);
 
 	return ret;
 }
