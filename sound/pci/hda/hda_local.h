@@ -786,4 +786,9 @@ static inline void snd_hda_eld_proc_free(struct hda_codec *codec,
 #define SND_PRINT_CHANNEL_ALLOCATION_ADVISED_BUFSIZE 80
 void snd_print_channel_allocation(int spk_alloc, char *buf, int buflen);
 
+/* shared with patch_hdmi.c and hda_eld.c */
+#define is_atihdmi(codec) (((codec)->vendor_id & 0xffff0000) == 0x10020000)
+#define is_amdhdmi_rev3(codec) \
+	((codec)->vendor_id == 0x1002aa01 && ((codec)->revision_id & 0xff00) >= 0x0300)
+
 #endif /* __SOUND_HDA_LOCAL_H */
