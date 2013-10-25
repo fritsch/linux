@@ -933,7 +933,28 @@ static void cayman_gpu_init(struct radeon_device *rdev)
 		rdev->config.cayman.sx_max_export_size = 256;
 		rdev->config.cayman.sx_max_export_pos_size = 64;
 		rdev->config.cayman.sx_max_export_smx_size = 192;
-		rdev->config.cayman.max_hw_contexts = 8;
+		if ((rdev->pdev->device == 0x9900) ||
+		    (rdev->pdev->device == 0x9901) ||
+		    (rdev->pdev->device == 0x9903) ||
+		    (rdev->pdev->device == 0x9904) ||
+		    (rdev->pdev->device == 0x9905) ||
+		    (rdev->pdev->device == 0x9906) ||
+		    (rdev->pdev->device == 0x9907) ||
+		    (rdev->pdev->device == 0x9908) ||
+		    (rdev->pdev->device == 0x9909) ||
+		    (rdev->pdev->device == 0x990A) ||
+		    (rdev->pdev->device == 0x990B) ||
+		    (rdev->pdev->device == 0x990C) ||
+		    (rdev->pdev->device == 0x990D) ||
+		    (rdev->pdev->device == 0x990E) ||
+		    (rdev->pdev->device == 0x990F) ||
+		    (rdev->pdev->device == 0x9910) ||
+		    (rdev->pdev->device == 0x9913) ||
+		    (rdev->pdev->device == 0x9917) ||
+		    (rdev->pdev->device == 0x9918))
+			rdev->config.cayman.max_hw_contexts = 8;
+		else
+			rdev->config.cayman.max_hw_contexts = 4;
 		rdev->config.cayman.sq_num_cf_insts = 2;
 
 		rdev->config.cayman.sc_prim_fifo_size = 0x40;
