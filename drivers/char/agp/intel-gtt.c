@@ -432,6 +432,13 @@ static unsigned int intel_gtt_stolen_size(void)
 		stolen_size = 0;
 	}
 
+	/*
+	 * Assumption is that systems with local
+	 * memory don't actually exist in the wild.
+	 */
+	if (WARN(local, "Unicorn sighted! Stop the presses!\n"))
+		stolen_size = 0;
+
 	return stolen_size;
 }
 
