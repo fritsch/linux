@@ -1599,7 +1599,13 @@ void r700_vram_gtt_location(struct radeon_device *rdev, struct radeon_mc *mc)
 				mc->mc_vram_size >> 20, mc->vram_start,
 				mc->vram_end, mc->real_vram_size >> 20);
 	} else {
-		radeon_vram_location(rdev, &rdev->mc, 0);
+		u64 base = 0;
+		if (rdev->flags & RADEON_IS_IGP) {
+			base = RREG32(MC_VM_FB_LOCATION) & 0xFFFF;
+			base <<= 24;
+		}
+
+		radeon_vram_location(rdev, &rdev->mc, base);
 		rdev->mc.gtt_base_align = 0;
 		radeon_gtt_location(rdev, mc);
 	}
