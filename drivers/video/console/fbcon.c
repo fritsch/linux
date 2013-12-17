@@ -397,15 +397,14 @@ static void fb_flashcursor(struct work_struct *work)
 	ops->cursor(vc, info, mode, softback_lines, get_color(vc, info, c, 1),
 		    get_color(vc, info, c, 0));
 	console_unlock();
+
+	mod_timer(&ops->cursor_timer, jiffies + HZ/5);
 }
 
 static void cursor_timer_handler(unsigned long dev_addr)
 {
 	struct fb_info *info = (struct fb_info *) dev_addr;
-	struct fbcon_ops *ops = info->fbcon_par;
-
 	queue_work(system_power_efficient_wq, &info->queue);
-	mod_timer(&ops->cursor_timer, jiffies + HZ/5);
 }
 
 static void fbcon_add_cursor_timer(struct fb_info *info)
@@ -433,6 +432,7 @@ static void fbcon_del_cursor_timer(struct fb_info *info)
 
 	if (info->queue.func == fb_flashcursor &&
 	    ops->flags & FBCON_FLAGS_CURSOR_TIMER) {
+		flush_work(&info->queue);
 		del_timer_sync(&ops->cursor_timer);
 		ops->flags &= ~FBCON_FLAGS_CURSOR_TIMER;
 	}
