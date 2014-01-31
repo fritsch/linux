@@ -215,6 +215,10 @@ intel_dp_mode_valid(struct drm_connector *connector,
 	max_rate = intel_dp_max_data_rate(max_link_clock, max_lanes);
 	mode_rate = intel_dp_link_required(target_clock, 18);
 
+	DRM_DEBUG_KMS("mode %s: maximum link clock %d with %d lanes,"
+		      " giving a maximum dot clock of %d but mode requires %d\n",
+		     mode->name,  max_link_clock, max_lanes, max_rate, mode_rate);
+
 	if (mode_rate > max_rate)
 		return MODE_CLOCK_HIGH;
 
