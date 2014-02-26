@@ -52,6 +52,8 @@
 #define IS_DIGITAL(c) (c->output_flag & (SDVO_TMDS_MASK | SDVO_LVDS_MASK))
 
 
+static void intel_sdvo_get_lvds_modes(struct drm_connector *connector);
+
 static const char *tv_format_names[] = {
 	"NTSC_M"   , "NTSC_J"  , "NTSC_443",
 	"PAL_B"    , "PAL_D"   , "PAL_G"   ,
@@ -773,9 +775,9 @@ intel_sdvo_create_preferred_input_timing(struct intel_sdvo *intel_sdvo,
 	args.height = height;
 	args.interlace = 0;
 
-	if (intel_sdvo->is_lvds &&
-	   (intel_sdvo->sdvo_lvds_fixed_mode->hdisplay != width ||
-	    intel_sdvo->sdvo_lvds_fixed_mode->vdisplay != height))
+	if (intel_sdvo->sdvo_lvds_fixed_mode &&
+	    (intel_sdvo->sdvo_lvds_fixed_mode->hdisplay != width ||
+	     intel_sdvo->sdvo_lvds_fixed_mode->vdisplay != height))
 		args.scaled = 1;
 
 	return intel_sdvo_set_value(intel_sdvo,
@@ -1211,7 +1213,7 @@ static void intel_sdvo_pre_enable(struct intel_encoder *intel_encoder)
 		return;
 
 	/* lvds has a special fixed output timing. */
-	if (intel_sdvo->is_lvds)
+	if (intel_sdvo->sdvo_lvds_fixed_mode)
 		intel_sdvo_get_dtd_from_mode(&output_dtd,
 					     intel_sdvo->sdvo_lvds_fixed_mode);
 	else
@@ -1564,7 +1566,7 @@ intel_sdvo_mode_valid(struct drm_connector *connector,
 	if (intel_sdvo->pixel_clock_max < mode->clock)
 		return MODE_CLOCK_HIGH;
 
-	if (intel_sdvo->is_lvds) {
+	if (intel_sdvo->sdvo_lvds_fixed_mode) {
 		if (mode->hdisplay > intel_sdvo->sdvo_lvds_fixed_mode->hdisplay)
 			return MODE_PANEL;
 
@@ -1724,6 +1726,17 @@ intel_sdvo_tmds_sink_detect(struct drm_connector *connector)
 	return status;
 }
 
+static enum drm_connector_status
+intel_sdvo_lvds_detect(struct drm_connector *connector)
+{
+	struct intel_sdvo *intel_sdvo = intel_attached_sdvo(connector);
+
+	intel_sdvo_get_lvds_modes(connector);
+	return (intel_sdvo->sdvo_lvds_fixed_mode ?
+		connector_status_connected :
+		connector_status_disconnected);
+}
+
 static bool
 intel_sdvo_connector_matches_edid(struct intel_sdvo_connector *sdvo,
 				  struct edid *edid)
@@ -1756,10 +1769,12 @@ intel_sdvo_detect(struct drm_connector *connector, bool force)
 		      response & 0xff, response >> 8,
 		      intel_sdvo_connector->output_flag);
 
-	if (response == 0)
-		return connector_status_disconnected;
-
 	intel_sdvo->attached_output = response;
+
+	/* Discard the fixed mode, LVDS will reattach during detect */
+	if (intel_sdvo->sdvo_lvds_fixed_mode != NULL)
+		drm_mode_destroy(connector->dev,
+				 intel_sdvo->sdvo_lvds_fixed_mode);
 
 	intel_sdvo->has_hdmi_monitor = false;
 	intel_sdvo->has_hdmi_audio = false;
@@ -1769,6 +1784,8 @@ intel_sdvo_detect(struct drm_connector *connector, bool force)
 		ret = connector_status_disconnected;
 	else if (IS_TMDS(intel_sdvo_connector))
 		ret = intel_sdvo_tmds_sink_detect(connector);
+	else if (IS_LVDS(intel_sdvo_connector))
+		ret = intel_sdvo_lvds_detect(connector);
 	else {
 		struct edid *edid;
 
@@ -1796,7 +1813,7 @@ intel_sdvo_detect(struct drm_connector *connector, bool force)
 		if (response & SDVO_TV_MASK)
 			intel_sdvo->is_tv = true;
 		if (response & SDVO_LVDS_MASK)
-			intel_sdvo->is_lvds = intel_sdvo->sdvo_lvds_fixed_mode != NULL;
+			intel_sdvo->is_lvds = true;
 	}
 
 	return ret;
@@ -1966,13 +1983,13 @@ static void intel_sdvo_get_lvds_modes(struct drm_connector *connector)
 	 */
 	intel_ddc_get_modes(connector, &intel_sdvo->ddc);
 
-	list_for_each_entry(newmode, &connector->probed_modes, head) {
-		if (newmode->type & DRM_MODE_TYPE_PREFERRED) {
-			intel_sdvo->sdvo_lvds_fixed_mode =
-				drm_mode_duplicate(connector->dev, newmode);
-
-			intel_sdvo->is_lvds = true;
-			break;
+	if (intel_sdvo->sdvo_lvds_fixed_mode == NULL) {
+		list_for_each_entry(newmode, &connector->probed_modes, head) {
+			if (newmode->type & DRM_MODE_TYPE_PREFERRED) {
+				intel_sdvo->sdvo_lvds_fixed_mode =
+					drm_mode_duplicate(connector->dev, newmode);
+				break;
+			}
 		}
 	}
 }
