@@ -495,18 +495,28 @@ cleanup:
 	return NULL;
 }
 
-struct drm_i915_gem_object *
-i915_gem_object_create_stolen(struct drm_device *dev, u32 size)
+static bool mark_free(struct drm_i915_gem_object *obj, struct list_head *unwind)
 {
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct drm_i915_gem_object *obj;
+	if (obj->stolen == NULL)
+		return false;
+
+	if (obj->madv != I915_MADV_DONTNEED)
+		return false;
+
+	if (i915_gem_obj_is_pinned(obj))
+		return false;
+
+	list_add(&obj->obj_exec_link, unwind);
+	return drm_mm_scan_add_block(obj->stolen);
+}
+
+static struct drm_mm_node *stolen_alloc(struct drm_i915_private *dev_priv, u32 size)
+{
 	struct drm_mm_node *stolen;
+	struct drm_i915_gem_object *obj;
+	struct list_head unwind, evict;
 	int ret;
 
-	if (!drm_mm_initialized(&dev_priv->mm.stolen))
-		return NULL;
-
-	DRM_DEBUG_KMS("creating stolen object: size=%x\n", size);
 	if (size == 0)
 		return NULL;
 
@@ -516,10 +526,98 @@ i915_gem_object_create_stolen(struct drm_device *dev, u32 size)
 
 	ret = drm_mm_insert_node(&dev_priv->mm.stolen, stolen, size,
 				 4096, DRM_MM_SEARCH_DEFAULT);
-	if (ret) {
-		kfree(stolen);
-		return NULL;
+	if (ret == 0)
+		return stolen;
+
+	/* No more stolen memory available, or too fragmented.
+	 * Try evicting purgeable objects and search again.
+	 */
+
+	drm_mm_init_scan(&dev_priv->mm.stolen, size, 4096, 0);
+	INIT_LIST_HEAD(&unwind);
+
+	list_for_each_entry(obj, &dev_priv->mm.unbound_list, global_list)
+		if (mark_free(obj, &unwind))
+			goto found;
+
+	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list)
+		if (mark_free(obj, &unwind))
+			goto found;
+
+found:
+	INIT_LIST_HEAD(&evict);
+	while (!list_empty(&unwind)) {
+		obj = list_first_entry(&unwind,
+				       struct drm_i915_gem_object,
+				       obj_exec_link);
+		list_del_init(&obj->obj_exec_link);
+
+		if (drm_mm_scan_remove_block(obj->stolen)) {
+			list_add(&obj->obj_exec_link, &evict);
+			drm_gem_object_reference(&obj->base);
+		}
 	}
+
+	ret = 0;
+	while (!list_empty(&evict)) {
+		obj = list_first_entry(&evict,
+				       struct drm_i915_gem_object,
+				       obj_exec_link);
+		list_del_init(&obj->obj_exec_link);
+
+		if (ret == 0) {
+			struct i915_vma *vma, *vma_next;
+
+			list_for_each_entry_safe(vma, vma_next,
+						 &obj->vma_list,
+						 vma_link)
+				if (i915_vma_unbind(vma))
+					break;
+
+			/* Stolen pins its pages to prevent the
+			 * normal shrinker from processing stolen
+			 * objects.
+			 */
+			i915_gem_object_unpin_pages(obj);
+
+			ret = i915_gem_object_put_pages(obj);
+			if (ret == 0) {
+				i915_gem_object_release_stolen(obj);
+				obj->madv = __I915_MADV_PURGED;
+			} else
+				i915_gem_object_pin_pages(obj);
+		}
+
+		drm_gem_object_unreference(&obj->base);
+	}
+
+	if (ret == 0)
+		ret = drm_mm_insert_node(&dev_priv->mm.stolen, stolen, size,
+					 4096, DRM_MM_SEARCH_DEFAULT);
+	if (ret == 0)
+		return stolen;
+
+	kfree(stolen);
+	return NULL;
+}
+
+struct drm_i915_gem_object *
+i915_gem_object_create_stolen(struct drm_device *dev, u32 size)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_i915_gem_object *obj;
+	struct drm_mm_node *stolen;
+
+	lockdep_assert_held(&dev->struct_mutex);
+
+	if (!drm_mm_initialized(&dev_priv->mm.stolen))
+		return NULL;
+
+	DRM_DEBUG_KMS("creating stolen object: size=%x\n", size);
+
+	stolen = stolen_alloc(dev_priv, size);
+	if (stolen == NULL)
+		return NULL;
 
 	obj = _i915_gem_object_create_stolen(dev, stolen);
 	if (obj)
