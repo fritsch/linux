@@ -1055,6 +1055,14 @@ i915_gem_shmem_pwrite(struct drm_device *dev,
 	int needs_clflush_before = 0;
 	struct sg_page_iter sg_iter;
 
+	/* prime objects have no backing filp to GEM pread/pwrite
+	 * pages from.
+	 */
+	if (!obj->base.filp) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	user_data = to_user_ptr(args->data_ptr);
 	remain = args->size;
 
@@ -1206,14 +1214,6 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 		goto out;
 	}
 
-	/* prime objects have no backing filp to GEM pread/pwrite
-	 * pages from.
-	 */
-	if (!obj->base.filp) {
-		ret = -EINVAL;
-		goto out;
-	}
-
 	trace_i915_gem_object_pwrite(obj, args->offset, args->size);
 
 	ret = -EFAULT;
@@ -1224,8 +1224,9 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 	 * perspective, requiring manual detiling by the client.
 	 */
 	if (obj->tiling_mode == I915_TILING_NONE &&
-	    obj->base.write_domain != I915_GEM_DOMAIN_CPU &&
-	    cpu_write_needs_clflush(obj)) {
+	    (obj->base.filp == NULL ||
+	     (obj->base.write_domain != I915_GEM_DOMAIN_CPU &&
+	      cpu_write_needs_clflush(obj)))) {
 		ret = i915_gem_gtt_pwrite_fast(dev, obj, args, file);
 		/* Note that the gtt paths might fail with non-page-backed user
 		 * pointers (e.g. gtt mappings when moving data between
