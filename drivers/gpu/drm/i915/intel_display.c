@@ -9635,6 +9635,10 @@ void intel_check_page_flip(struct drm_device *dev, int pipe)
 			 intel_crtc->unpin_work->flip_queued_vblank, drm_vblank_count(dev, pipe));
 		page_flip_completed(intel_crtc);
 	}
+	if (intel_crtc->unpin_work != NULL &&
+	    intel_crtc->unpin_work->rcs_active &&
+	    drm_vblank_count(dev, pipe) - intel_crtc->unpin_work->flip_queued_vblank > 1)
+		intel_queue_rps_boost_for_request(dev, intel_crtc->unpin_work->flip_queued_request);
 	spin_unlock(&dev->event_lock);
 }
 
@@ -9726,6 +9730,7 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 	crtc->primary->fb = fb;
 
 	work->pending_flip_obj = obj;
+	work->rcs_active = RCS_ENGINE(dev_priv)->last_request != NULL;
 
 	atomic_inc(&intel_crtc->unpin_work_count);
 	intel_crtc->reset_counter = atomic_read(&dev_priv->gpu_error.reset_counter);

@@ -706,6 +706,7 @@ struct intel_unpin_work {
 	int flip_queued_vblank;
 	int flip_ready_vblank;
 	bool enable_stall_check;
+	bool rcs_active;
 };
 
 struct intel_set_config {
@@ -1159,6 +1160,8 @@ void ironlake_teardown_rc6(struct drm_device *dev);
 void gen6_update_ring_freq(struct drm_device *dev);
 void gen6_rps_idle(struct drm_i915_private *dev_priv);
 void gen6_rps_boost(struct drm_i915_private *dev_priv);
+void intel_queue_rps_boost_for_request(struct drm_device *dev,
+				       struct i915_gem_request *rq);
 void ilk_wm_get_hw_state(struct drm_device *dev);
 void skl_wm_get_hw_state(struct drm_device *dev);
 void skl_ddb_get_hw_state(struct drm_i915_private *dev_priv,

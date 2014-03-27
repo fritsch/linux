@@ -7266,6 +7266,40 @@ int vlv_freq_opcode(struct drm_i915_private *dev_priv, int val)
 	return ret;
 }
 
+struct request_boost {
+	struct work_struct work;
+	struct i915_gem_request *rq;
+};
+
+static void __intel_rps_boost_work(struct work_struct *work)
+{
+	struct request_boost *boost = container_of(work, struct request_boost, work);
+
+	if (!i915_request_complete(boost->rq))
+		gen6_rps_boost(boost->rq->i915);
+
+	i915_request_put__unlocked(boost->rq);
+	kfree(boost);
+}
+
+void intel_queue_rps_boost_for_request(struct drm_device *dev,
+				       struct i915_gem_request *rq)
+{
+	struct request_boost *boost;
+
+	if (rq == NULL || INTEL_INFO(dev)->gen < 6)
+		return;
+
+	boost = kmalloc(sizeof(*boost), GFP_ATOMIC);
+	if (boost == NULL)
+		return;
+
+	INIT_WORK(&boost->work, __intel_rps_boost_work);
+	boost->rq = i915_request_get(rq);
+
+	queue_work(to_i915(dev)->wq, &boost->work);
+}
+
 void intel_pm_setup(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
