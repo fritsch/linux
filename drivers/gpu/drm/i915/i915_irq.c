@@ -3057,7 +3057,7 @@ static void ironlake_irq_reset(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
-	I915_WRITE(HWSTAM, 0xffffffff);
+	I915_WRITE(HWSTAM, ~0);
 
 	GEN5_IRQ_RESET(DE);
 	if (IS_GEN7(dev))
@@ -3267,7 +3267,7 @@ static int ironlake_irq_postinstall(struct drm_device *dev)
 	dev_priv->irq_mask = ~display_mask;
 	dev_priv->irq_enable = display_mask | extra_mask;
 
-	I915_WRITE(HWSTAM, 0xeffe);
+	I915_WRITE(HWSTAM, ~0);
 
 	ibx_irq_pre_postinstall(dev);
 
@@ -3549,7 +3549,7 @@ static void valleyview_irq_uninstall(struct drm_device *dev)
 
 	gen5_gt_irq_reset(dev);
 
-	I915_WRITE(HWSTAM, 0xffffffff);
+	I915_WRITE(HWSTAM, ~0);
 
 	vlv_display_irq_uninstall(dev_priv);
 }
@@ -3753,7 +3753,7 @@ static void i915_irq_preinstall(struct drm_device * dev)
 		I915_WRITE(PORT_HOTPLUG_STAT, I915_READ(PORT_HOTPLUG_STAT));
 	}
 
-	I915_WRITE16(HWSTAM, 0xeffe);
+	I915_WRITE16(HWSTAM, ~0);
 	for_each_pipe(dev_priv, pipe)
 		I915_WRITE(PIPESTAT(pipe), 0);
 	I915_WRITE(IMR, 0xffffffff);
@@ -3951,7 +3951,7 @@ static void i915_irq_uninstall(struct drm_device * dev)
 		I915_WRITE(PORT_HOTPLUG_STAT, I915_READ(PORT_HOTPLUG_STAT));
 	}
 
-	I915_WRITE16(HWSTAM, 0xffff);
+	I915_WRITE16(HWSTAM, ~0);
 	for_each_pipe(dev_priv, pipe) {
 		/* Clear enable bits; then clear status bits */
 		I915_WRITE(PIPESTAT(pipe), 0);
@@ -3971,7 +3971,7 @@ static void i965_irq_preinstall(struct drm_device * dev)
 	I915_WRITE(PORT_HOTPLUG_EN, 0);
 	I915_WRITE(PORT_HOTPLUG_STAT, I915_READ(PORT_HOTPLUG_STAT));
 
-	I915_WRITE(HWSTAM, 0xeffe);
+	I915_WRITE(HWSTAM, ~0);
 	for_each_pipe(dev_priv, pipe)
 		I915_WRITE(PIPESTAT(pipe), 0);
 	I915_WRITE(IMR, 0xffffffff);
@@ -4179,7 +4179,7 @@ static void i965_irq_uninstall(struct drm_device * dev)
 	I915_WRITE(PORT_HOTPLUG_EN, 0);
 	I915_WRITE(PORT_HOTPLUG_STAT, I915_READ(PORT_HOTPLUG_STAT));
 
-	I915_WRITE(HWSTAM, 0xffffffff);
+	I915_WRITE(HWSTAM, ~0);
 	for_each_pipe(dev_priv, pipe)
 		I915_WRITE(PIPESTAT(pipe), 0);
 	I915_WRITE(IMR, 0xffffffff);
