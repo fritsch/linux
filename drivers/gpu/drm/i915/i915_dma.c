@@ -1073,9 +1073,18 @@ void i915_driver_lastclose(struct drm_device *dev)
 
 void i915_driver_preclose(struct drm_device *dev, struct drm_file *file)
 {
+	struct drm_i915_private *dev_priv = to_i915(dev);
+	bool was_interruptible;
+
 	mutex_lock(&dev->struct_mutex);
+	was_interruptible = dev_priv->mm.interruptible;
+	WARN_ON(!was_interruptible);
+	dev_priv->mm.interruptible = false;
+
 	i915_gem_context_close(dev, file);
 	i915_gem_release(dev, file);
+
+	dev_priv->mm.interruptible = was_interruptible;
 	mutex_unlock(&dev->struct_mutex);
 
 	if (drm_core_check_feature(dev, DRIVER_MODESET))
