@@ -4025,6 +4025,8 @@ i915_gem_madvise_ioctl(struct drm_device *dev, void *data,
 	switch (args->madv) {
 	case I915_MADV_DONTNEED:
 	case I915_MADV_WILLNEED:
+	case I915_MADV_POPULATE:
+	case I915_MADV_INVALIDATE:
 	    break;
 	default:
 	    return -EINVAL;
@@ -4045,12 +4047,18 @@ i915_gem_madvise_ioctl(struct drm_device *dev, void *data,
 		goto out;
 	}
 
-	if (obj->madv != __I915_MADV_PURGED)
-		obj->madv = args->madv;
+	if (args->madv == I915_MADV_INVALIDATE) {
+		ret = drop_pages(obj);
+	} else if (args->madv == I915_MADV_POPULATE) {
+		ret = i915_gem_object_get_pages(obj);
+	} else {
+		if (obj->madv != __I915_MADV_PURGED)
+			obj->madv = args->madv;
 
-	/* if the object is no longer attached, discard its backing storage */
-	if (i915_gem_object_is_purgeable(obj) && obj->pages == NULL)
-		i915_gem_object_truncate(obj);
+		/* if the object is no longer attached, discard its backing storage */
+		if (i915_gem_object_is_purgeable(obj) && obj->pages == NULL)
+			i915_gem_object_truncate(obj);
+	}
 
 	args->retained = obj->madv != __I915_MADV_PURGED;
 

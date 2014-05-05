@@ -959,6 +959,8 @@ struct drm_i915_get_pipe_from_crtc_id {
 #define I915_MADV_WILLNEED 0
 #define I915_MADV_DONTNEED 1
 #define __I915_MADV_PURGED 2 /* internal state */
+#define I915_MADV_POPULATE   3
+#define I915_MADV_INVALIDATE 4
 
 struct drm_i915_gem_madvise {
 	/** Handle of the buffer to change the backing store advice */
