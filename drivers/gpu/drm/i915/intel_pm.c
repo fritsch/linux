@@ -4413,8 +4413,6 @@ void gen6_set_rps(struct drm_device *dev, u8 val)
 	I915_WRITE(GEN6_RP_INTERRUPT_LIMITS, gen6_rps_limits(dev_priv, val));
 	I915_WRITE(GEN6_PMINTRMSK, gen6_rps_pm_mask(dev_priv, val));
 
-	POSTING_READ(GEN6_RPNSWREQ);
-
 	dev_priv->rps.cur_freq = val;
 	trace_intel_gpu_freq_change(val * 50);
 }
