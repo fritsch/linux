@@ -3191,13 +3191,20 @@ i915_gem_object_bind_to_vm(struct drm_i915_gem_object *obj,
 			goto err_free_vma;
 		}
 	} else {
+		unsigned search = DRM_MM_SEARCH_DEFAULT;
+		unsigned create = DRM_MM_CREATE_DEFAULT;
+		if (i915_is_ggtt(vm) &&
+		    (flags & PIN_MAPPABLE) == 0 &&
+		    obj->cache_level != I915_CACHE_NONE) {
+			search = DRM_MM_SEARCH_BELOW;
+			create = DRM_MM_CREATE_TOP;
+		}
 search_free:
 		ret = drm_mm_insert_node_in_range_generic(&vm->mm, &vma->node,
 							  size, alignment,
 							  obj->cache_level,
 							  start, end,
-							  DRM_MM_SEARCH_DEFAULT,
-							  DRM_MM_CREATE_DEFAULT);
+							  search, create);
 		if (ret) {
 			ret = i915_gem_evict_something(dev, vm, size, alignment,
 						       obj->cache_level,
