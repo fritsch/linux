@@ -2350,6 +2350,21 @@ do_detailed_mode(struct detailed_timing *timing, void *c)
 	}
 }
 
+static bool preferred_detailed_mode(struct edid *edid, u32 quirks)
+{
+	bool preferred;
+
+	preferred = edid->features & DRM_EDID_FEATURE_PREFERRED_TIMING;
+	if (version_greater(edid, 1, 3))
+		preferred = true;
+	if (quirks & EDID_QUIRK_FIRST_DETAILED_PREFERRED)
+		preferred = true;
+	if (quirks & (EDID_QUIRK_PREFER_LARGE_60 | EDID_QUIRK_PREFER_LARGE_75))
+		preferred = false;
+
+	return preferred;
+}
+
 /*
  * add_detailed_modes - Add modes from detailed timings
  * @connector: attached connector
@@ -2363,13 +2378,9 @@ add_detailed_modes(struct drm_connector *connector, struct edid *edid,
 	struct detailed_mode_closure closure = {
 		.connector = connector,
 		.edid = edid,
-		.preferred = 1,
+		.preferred = preferred_detailed_mode(edid, quirks),
 		.quirks = quirks,
 	};
-
-	if (closure.preferred && !version_greater(edid, 1, 3))
-		closure.preferred =
-		    (edid->features & DRM_EDID_FEATURE_PREFERRED_TIMING);
 
 	drm_for_each_detailed_block((u8 *)edid, do_detailed_mode, &closure);
 
