@@ -194,6 +194,58 @@ found:
 	return ret;
 }
 
+int
+i915_gem_evict_range(struct drm_device *dev, struct i915_address_space *vm,
+		     unsigned long start, unsigned long end)
+{
+	struct drm_mm_node *node;
+	struct list_head eviction_list;
+	int ret = 0;
+
+	INIT_LIST_HEAD(&eviction_list);
+	drm_mm_for_each_node(node, &vm->mm) {
+		struct i915_vma *vma;
+
+		if (node->start + node->size <= start)
+			continue;
+		if (node->start >= end)
+			break;
+
+		vma = container_of(node, typeof(*vma), node);
+		if (vma->pin_count) {
+			ret = -EBUSY;
+			break;
+		}
+
+		if (WARN_ON(!list_empty(&vma->exec_list))) {
+			ret = -EINVAL;
+			break;
+		}
+
+		drm_gem_object_reference(&vma->obj->base);
+		list_add(&vma->exec_list, &eviction_list);
+	}
+
+	while (!list_empty(&eviction_list)) {
+		struct i915_vma *vma;
+		struct drm_gem_object *obj;
+
+		vma = list_first_entry(&eviction_list,
+				       struct i915_vma,
+				       exec_list);
+
+		obj = &vma->obj->base;
+
+		list_del_init(&vma->exec_list);
+		if (ret == 0)
+			ret = i915_vma_unbind(vma);
+
+		drm_gem_object_unreference(obj);
+	}
+
+	return ret;
+}
+
 /**
  * i915_gem_evict_vm - Evict all idle vmas from a vm
  *

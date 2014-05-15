@@ -104,7 +104,8 @@ eb_get_batch(struct eb_vmas *eb)
 	 * Note that actual hangs have only been observed on gen7, but for
 	 * paranoia do it everywhere.
 	 */
-	vma->exec_entry->flags |= __EXEC_OBJECT_NEEDS_BIAS;
+	if ((vma->exec_entry->flags & EXEC_OBJECT_PINNED) == 0)
+		vma->exec_entry->flags |= __EXEC_OBJECT_NEEDS_BIAS;
 
 	return vma;
 }
@@ -555,6 +556,8 @@ i915_gem_execbuffer_reserve_vma(struct i915_vma *vma,
 		flags |= PIN_GLOBAL;
 	if (entry->flags & __EXEC_OBJECT_NEEDS_BIAS)
 		flags |= BATCH_OFFSET_BIAS | PIN_OFFSET_BIAS;
+	if (entry->flags & EXEC_OBJECT_PINNED)
+		flags |= entry->offset | PIN_OFFSET_FIXED;
 
 	ret = i915_gem_object_pin(obj, vma->vm, entry->alignment, flags);
 	if (ret)
@@ -616,6 +619,10 @@ eb_vma_misplaced(struct i915_vma *vma)
 
 	if (entry->alignment &&
 	    vma->node.start & (entry->alignment - 1))
+		return true;
+
+	if (entry->flags & EXEC_OBJECT_PINNED &&
+	    vma->node.start != entry->offset)
 		return true;
 
 	if (entry->flags & __EXEC_OBJECT_NEEDS_MAP && !obj->map_and_fenceable)

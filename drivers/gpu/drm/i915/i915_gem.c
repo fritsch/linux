@@ -3171,22 +3171,43 @@ i915_gem_object_bind_to_vm(struct drm_i915_gem_object *obj,
 	if (IS_ERR(vma))
 		goto err_unpin;
 
+	if (flags & PIN_OFFSET_FIXED) {
+		uint64_t offset = flags & PIN_OFFSET_MASK;
+		if (alignment && offset & (alignment - 1)) {
+			vma = ERR_PTR(-EINVAL);
+			goto err_free_vma;
+		}
+		vma->node.start = offset;
+		vma->node.size = size;
+		vma->node.color = obj->cache_level;
+		ret = drm_mm_reserve_node(&vm->mm, &vma->node);
+		if (ret) {
+			ret = i915_gem_evict_range(dev, vm, start, end);
+			if (ret == 0)
+				ret = drm_mm_reserve_node(&vm->mm, &vma->node);
+		}
+		if (ret) {
+			vma = ERR_PTR(ret);
+			goto err_free_vma;
+		}
+	} else {
 search_free:
-	ret = drm_mm_insert_node_in_range_generic(&vm->mm, &vma->node,
-						  size, alignment,
-						  obj->cache_level,
-						  start, end,
-						  DRM_MM_SEARCH_DEFAULT,
-						  DRM_MM_CREATE_DEFAULT);
-	if (ret) {
-		ret = i915_gem_evict_something(dev, vm, size, alignment,
-					       obj->cache_level,
-					       start, end,
-					       flags);
-		if (ret == 0)
-			goto search_free;
+		ret = drm_mm_insert_node_in_range_generic(&vm->mm, &vma->node,
+							  size, alignment,
+							  obj->cache_level,
+							  start, end,
+							  DRM_MM_SEARCH_DEFAULT,
+							  DRM_MM_CREATE_DEFAULT);
+		if (ret) {
+			ret = i915_gem_evict_something(dev, vm, size, alignment,
+						       obj->cache_level,
+						       start, end,
+						       flags);
+			if (ret == 0)
+				goto search_free;
 
-		goto err_free_vma;
+			goto err_free_vma;
+		}
 	}
 	if (WARN_ON(!i915_gem_valid_gtt_space(vma, obj->cache_level))) {
 		ret = -EINVAL;
@@ -3699,6 +3720,10 @@ i915_vma_misplaced(struct i915_vma *vma, uint32_t alignment, uint64_t flags)
 
 	if (flags & PIN_OFFSET_BIAS &&
 	    vma->node.start < (flags & PIN_OFFSET_MASK))
+		return true;
+
+	if (flags & PIN_OFFSET_FIXED &&
+	    vma->node.start != (flags & PIN_OFFSET_MASK))
 		return true;
 
 	return false;
