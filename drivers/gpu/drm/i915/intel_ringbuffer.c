@@ -506,6 +506,12 @@ static int enable_status_page(struct intel_engine_cs *engine)
 		}
 	}
 
+	if (IS_GEN5(dev_priv) || IS_G4X(dev_priv)) {
+		if (wait_for((I915_READ(mmio) & 1) == 0, 1000))
+			DRM_ERROR("%s: wait for Translation-in-Progress to complete for HWS timed out\n",
+				  engine->name);
+	}
+
 	I915_WRITE(mmio, addr);
 	POSTING_READ(mmio);
 
