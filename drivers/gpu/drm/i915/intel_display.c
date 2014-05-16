@@ -13190,6 +13190,7 @@ static void intel_sanitize_crtc(struct intel_crtc *crtc)
 	/* Adjust the state of the output pipe according to whether we
 	 * have active connectors/encoders. */
 	intel_crtc_update_dpms(&crtc->base);
+	intel_crtc_update_cursor(&crtc->base, crtc->active && crtc->cursor_bo);
 
 	if (crtc->active != crtc->base.enabled) {
 		struct intel_encoder *encoder;
