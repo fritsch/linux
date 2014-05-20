@@ -1213,7 +1213,7 @@ static void assert_cursor(struct drm_i915_private *dev_priv,
 #define assert_cursor_enabled(d, p) assert_cursor(d, p, true)
 #define assert_cursor_disabled(d, p) assert_cursor(d, p, false)
 
-void assert_pipe(struct drm_i915_private *dev_priv,
+bool assert_pipe(struct drm_i915_private *dev_priv,
 		 enum pipe pipe, bool state)
 {
 	int reg;
@@ -1236,12 +1236,12 @@ void assert_pipe(struct drm_i915_private *dev_priv,
 		cur_state = !!(val & PIPECONF_ENABLE);
 	}
 
-	WARN(cur_state != state,
-	     "pipe %c assertion failure (expected %s, current %s)\n",
-	     pipe_name(pipe), state_string(state), state_string(cur_state));
+	return !WARN(cur_state != state,
+		     "pipe %c assertion failure (expected %s, current %s)\n",
+		     pipe_name(pipe), state_string(state), state_string(cur_state));
 }
 
-static void assert_plane(struct drm_i915_private *dev_priv,
+static bool assert_plane(struct drm_i915_private *dev_priv,
 			 enum plane plane, bool state)
 {
 	int reg;
@@ -1251,9 +1251,9 @@ static void assert_plane(struct drm_i915_private *dev_priv,
 	reg = DSPCNTR(plane);
 	val = I915_READ(reg);
 	cur_state = !!(val & DISPLAY_PLANE_ENABLE);
-	WARN(cur_state != state,
-	     "plane %c assertion failure (expected %s, current %s)\n",
-	     plane_name(plane), state_string(state), state_string(cur_state));
+	return !WARN(cur_state != state,
+		     "plane %c assertion failure (expected %s, current %s)\n",
+		     plane_name(plane), state_string(state), state_string(cur_state));
 }
 
 #define assert_plane_enabled(d, p) assert_plane(d, p, true)
@@ -11014,6 +11014,20 @@ static int __intel_set_mode(struct drm_crtc *crtc,
 		struct drm_framebuffer *old_fb = crtc->primary->fb;
 		struct drm_i915_gem_object *old_obj = intel_fb_obj(old_fb);
 		struct drm_i915_gem_object *obj = intel_fb_obj(fb);
+
+		if (!assert_pipe_disabled(dev_priv, intel_crtc->pipe) ||
+		    !assert_plane_disabled(dev_priv, intel_crtc->plane)) {
+			ret = -EIO;
+			goto done;
+		}
+
+		/* The display engine is disabled. We can safely remove the
+		 * current object pointed to by hardware registers as before
+		 * we enable the pipe again, we will always update those
+		 * registers to point to the currently pinned object. Even
+		 * if we fail, though the hardware points to a stale address,
+		 * that address is never read.
+		 */
 
 		mutex_lock(&dev->struct_mutex);
 		ret = intel_pin_and_fence_fb_obj(crtc->primary, fb, NULL);
