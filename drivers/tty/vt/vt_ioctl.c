@@ -684,7 +684,8 @@ int vt_ioctl(struct tty_struct *tty,
 			console_unlock();
 			if (ret)
 				break;
-			set_console(arg);
+			if (set_console(arg))
+				ret = -EIO;
 		}
 		break;
 
