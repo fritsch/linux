@@ -896,30 +896,27 @@ vmas_move_to_rq(struct eb_vmas *eb,
 	return 0;
 }
 
-static bool
-i915_gem_check_execbuffer(struct drm_i915_gem_execbuffer2 *exec)
-{
-	if (exec->flags & __I915_EXEC_UNKNOWN_FLAGS)
-		return false;
-
-	return ((exec->batch_start_offset | exec->batch_len) & 0x7) == 0;
-}
-
 static int
 validate_exec_list(struct drm_i915_private *dev_priv,
-		   struct drm_i915_gem_exec_object2 *exec,
-		   int count)
+		   struct drm_i915_gem_execbuffer2 *args,
+		   struct drm_i915_gem_exec_object2 *exec)
 {
 	unsigned relocs_total = 0;
 	unsigned relocs_max = UINT_MAX / sizeof(struct drm_i915_gem_relocation_entry);
 	unsigned invalid_flags;
 	int i;
 
+	if (args->flags & __I915_EXEC_UNKNOWN_FLAGS)
+		return -EINVAL;
+
+	if ((args->batch_start_offset | args->batch_len) & 0x7)
+		return -EINVAL;
+
 	invalid_flags = __EXEC_OBJECT_UNKNOWN_FLAGS;
 	if (USES_FULL_PPGTT(dev_priv))
 		invalid_flags |= EXEC_OBJECT_NEEDS_GTT;
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < args->buffer_count; i++) {
 		char __user *ptr = to_user_ptr(exec[i].relocs_ptr);
 		int length; /* limited by fault_in_pages_readable() */
 
@@ -1260,11 +1257,8 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 	int ret;
 	bool need_relocs;
 
-	if (!i915_gem_check_execbuffer(args))
-		return -EINVAL;
-
-	ret = validate_exec_list(dev_priv, exec, args->buffer_count);
-	if (ret)
+	ret = validate_exec_list(dev_priv, args, exec);
+	if (unlikely(ret))
 		return ret;
 
 	flags = 0;
