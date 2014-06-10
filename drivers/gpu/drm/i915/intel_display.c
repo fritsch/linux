@@ -12533,6 +12533,8 @@ static int intel_framebuffer_init(struct drm_device *dev,
 {
 	int aligned_height;
 	int pitch_limit;
+	int depth;
+	int bpp;
 	int ret;
 
 	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
@@ -12545,6 +12547,15 @@ static int intel_framebuffer_init(struct drm_device *dev,
 	if (mode_cmd->pitches[0] & 63) {
 		DRM_DEBUG("pitch (%d) must be at least 64 byte aligned\n",
 			  mode_cmd->pitches[0]);
+		return -EINVAL;
+	}
+
+	drm_fb_get_bpp_depth(mode_cmd->pixel_format, &bpp, &depth);
+	if (mode_cmd->pitches[0] < intel_framebuffer_pitch_for_width(mode_cmd->width,
+								     bpp)) {
+		DRM_DEBUG("pitch (%d) must be at least the linear stride (%d)\n",
+			  mode_cmd->pitches[0],
+			  intel_framebuffer_pitch_for_width(mode_cmd->width, bpp));
 		return -EINVAL;
 	}
 
