@@ -6460,6 +6460,8 @@ static void gen6_init_clock_gating(struct drm_device *dev)
 	/* WaDisable_RenderCache_OperationalFlush:snb */
 	I915_WRITE(CACHE_MODE_0, _MASKED_BIT_DISABLE(RC_OP_FLUSH_ENABLE));
 
+	I915_WRITE(GEN6_GT_MODE, _MASKED_BIT_DISABLE(0xffff));
+
 	/*
 	 * BSpec recoomends 8x4 when MSAA is used,
 	 * however in practice 16x4 seems fastest.
@@ -6470,6 +6472,11 @@ static void gen6_init_clock_gating(struct drm_device *dev)
 	 */
 	I915_WRITE(GEN6_GT_MODE,
 		   GEN6_WIZ_HASHING_MASK | GEN6_WIZ_HASHING_16x4);
+
+	/* WaSetupGtModeTdRowDispatch:snb */
+	if (IS_SNB_GT1(dev))
+		I915_WRITE(GEN6_GT_MODE,
+			   _MASKED_BIT_ENABLE(GEN6_TD_FOUR_ROW_DISPATCH_DISABLE));
 
 	ilk_init_lp_watermarks(dev);
 
