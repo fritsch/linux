@@ -126,3 +126,32 @@ intel_attach_broadcast_rgb_property(struct drm_connector *connector)
 
 	drm_object_attach_property(&connector->base, prop, 0);
 }
+
+static const struct drm_prop_enum_list psr_names[] = {
+	{ -1, "Unsupported" },
+	{  0, "Idle" },
+	{  1, "Active" },
+};
+
+void
+intel_attach_psr_property(struct drm_connector *connector)
+{
+	struct drm_device *dev = connector->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
+
+	prop = dev_priv->psr.property;
+	if (prop == NULL) {
+		prop = drm_property_create_enum(dev,
+						DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE,
+						"Panel Self-Refresh",
+						psr_names,
+						ARRAY_SIZE(psr_names));
+		if (prop == NULL)
+			return;
+
+		dev_priv->psr.property = prop;
+	}
+
+	drm_object_attach_property(&connector->base, prop, -1);
+}

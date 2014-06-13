@@ -2246,6 +2246,12 @@ static bool intel_edp_psr_match_conditions(struct intel_dp *intel_dp)
 	return true;
 }
 
+static void intel_edp_set_psr_property(struct intel_connector *connector, uint64_t val)
+{
+	drm_object_property_set_value(&connector->base.base,
+				      to_i915(connector->base.dev)->psr.property, val);
+}
+
 static void intel_edp_psr_do_enable(struct intel_dp *intel_dp)
 {
 	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
@@ -2258,6 +2264,8 @@ static void intel_edp_psr_do_enable(struct intel_dp *intel_dp)
 
 	/* Enable/Re-enable PSR on the host */
 	intel_edp_psr_enable_source(intel_dp);
+
+	intel_edp_set_psr_property(intel_dp->attached_connector, 1);
 
 	dev_priv->psr.active = true;
 }
@@ -2372,6 +2380,7 @@ unlock:
 static void intel_edp_psr_do_exit(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_encoder *encoder;
 
 	if (dev_priv->psr.active) {
 		u32 val = I915_READ(EDP_PSR_CTL(dev));
@@ -2383,6 +2392,11 @@ static void intel_edp_psr_do_exit(struct drm_device *dev)
 		dev_priv->psr.active = false;
 	}
 
+	list_for_each_entry(encoder, &dev->mode_config.encoder_list, base.head)
+		if (encoder->type == INTEL_OUTPUT_EDP) {
+			struct intel_dp *intel_dp = enc_to_intel_dp(&encoder->base);
+			intel_edp_set_psr_property(intel_dp->attached_connector, 0);
+		}
 }
 
 void intel_edp_psr_invalidate(struct drm_device *dev,
@@ -3953,6 +3967,8 @@ intel_dp_get_dpcd(struct intel_dp *intel_dp)
 			dev_priv->psr.sink_support = true;
 			DRM_DEBUG_KMS("Detected EDP PSR Panel.\n");
 		}
+		intel_edp_set_psr_property(intel_dp->attached_connector,
+					   dev_priv->psr.sink_support ? dev_priv->psr.active : -1);
 	}
 
 	/* Training Pattern 3 support, both source and sink */
@@ -4909,6 +4925,8 @@ intel_dp_add_properties(struct intel_dp *intel_dp, struct drm_connector *connect
 	intel_dp->color_range_auto = true;
 
 	if (is_edp(intel_dp)) {
+		if (HAS_PSR(connector->dev))
+			intel_attach_psr_property(connector);
 		drm_mode_create_scaling_mode_property(connector->dev);
 		drm_object_attach_property(
 			&connector->base,

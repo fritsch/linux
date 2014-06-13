@@ -754,6 +754,7 @@ struct i915_psr {
 	bool active;
 	struct delayed_work work;
 	unsigned busy_frontbuffer_bits;
+	struct drm_property *property;
 };
 
 enum intel_pch {

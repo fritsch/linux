@@ -2722,7 +2722,7 @@ void intel_crt_init(struct drm_device *dev)
 	<td valign="top" >TBD</td>
 	</tr>
 	<tr>
-	<td rowspan="21" valign="top" >i915</td>
+	<td rowspan="22" valign="top" >i915</td>
 	<td rowspan="2" valign="top" >Generic</td>
 	<td valign="top" >"Broadcast RGB"</td>
 	<td valign="top" >ENUM</td>
@@ -2872,6 +2872,14 @@ void intel_crt_init(struct drm_device *dev)
 	<td valign="top" >Min=0, Max= SDVO dependent</td>
 	<td valign="top" >Connector</td>
 	<td valign="top" >TBD</td>
+	</tr>
+	<tr>
+	<td valign="top" >eDP</td>
+	<td valign="top" >“Panel Self-Refresh”</td>
+	<td valign="top" >ENUM | IMMUTABLE</td>
+	<td valign="top" >{ "Unsupported", "Idle", "Active" }</td>
+	<td valign="top" >Connector</td>
+	<td valign="top" >Whether the eDP panel supports using self-refresh, which is a power saving mode for static displays as the panel is able to read from its own buffer rather than require the host to send the same frame on every vertical refresh, and whether it is idle or active</td>
 	</tr>
 	<tr>
 	<td rowspan="2" valign="top" >CDV gma-500</td>
