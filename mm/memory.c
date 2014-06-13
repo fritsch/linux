@@ -1651,71 +1651,81 @@ int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(vm_insert_mixed);
 
+struct remap_pfn {
+	struct mm_struct *mm;
+	unsigned long addr;
+	unsigned long pfn;
+	pgprot_t prot;
+};
+
 /*
  * maps a range of physical memory into the requested pages. the old
  * mappings are removed. any references to nonexistent pages results
  * in null mappings (currently treated as "copy-on-access")
  */
-static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
-			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+static inline int remap_pfn(struct remap_pfn *r, pte_t *pte)
+{
+	if (!pte_none(*pte))
+		return -EBUSY;
+
+	set_pte_at(r->mm, r->addr, pte,
+		   pte_mkspecial(pfn_pte(r->pfn, r->prot)));
+	r->pfn++;
+	r->addr += PAGE_SIZE;
+	return 0;
+}
+
+static int remap_pte_range(struct remap_pfn *r, pmd_t *pmd, unsigned long end)
 {
 	pte_t *pte;
 	spinlock_t *ptl;
+	int err;
 
-	pte = pte_alloc_map_lock(mm, pmd, addr, &ptl);
+	pte = pte_alloc_map_lock(r->mm, pmd, r->addr, &ptl);
 	if (!pte)
 		return -ENOMEM;
+
 	arch_enter_lazy_mmu_mode();
 	do {
-		BUG_ON(!pte_none(*pte));
-		set_pte_at(mm, addr, pte, pte_mkspecial(pfn_pte(pfn, prot)));
-		pfn++;
-	} while (pte++, addr += PAGE_SIZE, addr != end);
+		err = remap_pfn(r, pte++);
+	} while (err == 0 && r->addr < end);
 	arch_leave_lazy_mmu_mode();
+
 	pte_unmap_unlock(pte - 1, ptl);
-	return 0;
+	return err;
 }
 
-static inline int remap_pmd_range(struct mm_struct *mm, pud_t *pud,
-			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+static inline int remap_pmd_range(struct remap_pfn *r, pud_t *pud, unsigned long end)
 {
 	pmd_t *pmd;
-	unsigned long next;
+	int err;
 
-	pfn -= addr >> PAGE_SHIFT;
-	pmd = pmd_alloc(mm, pud, addr);
+	pmd = pmd_alloc(r->mm, pud, r->addr);
 	if (!pmd)
 		return -ENOMEM;
 	VM_BUG_ON(pmd_trans_huge(*pmd));
+
 	do {
-		next = pmd_addr_end(addr, end);
-		if (remap_pte_range(mm, pmd, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot))
-			return -ENOMEM;
-	} while (pmd++, addr = next, addr != end);
-	return 0;
+		err = remap_pte_range(r, pmd++, pmd_addr_end(r->addr, end));
+	} while (err == 0 && r->addr < end);
+
+	return err;
 }
 
-static inline int remap_pud_range(struct mm_struct *mm, pgd_t *pgd,
-			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+static inline int remap_pud_range(struct remap_pfn *r, pgd_t *pgd, unsigned long end)
 {
 	pud_t *pud;
-	unsigned long next;
+	int err;
 
-	pfn -= addr >> PAGE_SHIFT;
-	pud = pud_alloc(mm, pgd, addr);
+	pud = pud_alloc(r->mm, pgd, r->addr);
 	if (!pud)
 		return -ENOMEM;
+
 	do {
-		next = pud_addr_end(addr, end);
-		if (remap_pmd_range(mm, pud, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot))
-			return -ENOMEM;
-	} while (pud++, addr = next, addr != end);
-	return 0;
+		err = remap_pmd_range(r, pud++, pud_addr_end(r->addr, end));
+	} while (err == 0 && r->addr < end);
+
+	return err;
 }
 
 /**
@@ -1731,10 +1741,9 @@ static inline int remap_pud_range(struct mm_struct *mm, pgd_t *pgd,
 int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 		    unsigned long pfn, unsigned long size, pgprot_t prot)
 {
-	pgd_t *pgd;
-	unsigned long next;
 	unsigned long end = addr + PAGE_ALIGN(size);
-	struct mm_struct *mm = vma->vm_mm;
+	struct remap_pfn r;
+	pgd_t *pgd;
 	int err;
 
 	/*
@@ -1768,19 +1777,22 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 
 	BUG_ON(addr >= end);
-	pfn -= addr >> PAGE_SHIFT;
-	pgd = pgd_offset(mm, addr);
 	flush_cache_range(vma, addr, end);
-	do {
-		next = pgd_addr_end(addr, end);
-		err = remap_pud_range(mm, pgd, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot);
-		if (err)
-			break;
-	} while (pgd++, addr = next, addr != end);
 
-	if (err)
+	r.mm = vma->vm_mm;
+	r.addr = addr;
+	r.pfn = pfn;
+	r.prot = prot;
+
+	pgd = pgd_offset(r.mm, addr);
+	do {
+		err = remap_pud_range(&r, pgd++, pgd_addr_end(r.addr, end));
+	} while (err == 0 && r.addr < end);
+
+	if (err) {
 		untrack_pfn(vma, pfn, PAGE_ALIGN(size));
+		BUG_ON(err == -EBUSY);
+	}
 
 	return err;
 }
