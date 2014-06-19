@@ -61,6 +61,7 @@
 #include <linux/string.h>
 #include <linux/dma-debug.h>
 #include <linux/debugfs.h>
+#include <linux/io-mapping.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -1797,6 +1798,51 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	return err;
 }
 EXPORT_SYMBOL(remap_pfn_range);
+
+/**
+ * remap_io_mapping - remap an IO mapping to userspace
+ * @vma: user vma to map to
+ * @addr: target user address to start at
+ * @pfn: physical address of kernel memory
+ * @size: size of map area
+ * @iomap: the source io_mapping
+ *
+ *  Note: this is only safe if the mm semaphore is held when called.
+ */
+int remap_io_mapping(struct vm_area_struct *vma,
+		     unsigned long addr, unsigned long pfn, unsigned long size,
+		     struct io_mapping *iomap)
+{
+	unsigned long end = addr + PAGE_ALIGN(size);
+	struct remap_pfn r;
+	pgd_t *pgd;
+	int err;
+
+	if (WARN_ON(addr >= end))
+		return -EINVAL;
+
+#define MUST_SET (VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP)
+	BUG_ON(is_cow_mapping(vma->vm_flags));
+	BUG_ON((vma->vm_flags & MUST_SET) != MUST_SET);
+#undef MUST_SET
+
+	r.mm = vma->vm_mm;
+	r.addr = addr;
+	r.pfn = pfn;
+	r.prot = __pgprot((pgprot_val(iomap->prot) & _PAGE_CACHE_MASK) |
+			  (pgprot_val(vma->vm_page_prot) & ~_PAGE_CACHE_MASK));
+
+	pgd = pgd_offset(r.mm, addr);
+	do {
+		err = remap_pud_range(&r, pgd++, pgd_addr_end(r.addr, end));
+	} while (err == 0 && r.addr < end);
+
+	if (err)
+		zap_page_range_single(vma, addr, r.addr - addr, NULL);
+
+	return err;
+}
+EXPORT_SYMBOL(remap_io_mapping);
 
 /**
  * vm_iomap_memory - remap memory to userspace
