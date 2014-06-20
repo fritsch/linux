@@ -31,16 +31,17 @@
  * See Documentation/io-mapping.txt
  */
 
-#ifdef CONFIG_HAVE_ATOMIC_IOMAP
-
-#include <asm/iomap.h>
-
 struct io_mapping {
 	resource_size_t base;
 	unsigned long size;
 	pgprot_t prot;
+	void __iomem *iomem;
 };
 
+
+#ifdef CONFIG_HAVE_ATOMIC_IOMAP
+
+#include <asm/iomap.h>
 /*
  * For small address space machines, mapping large objects
  * into the kernel virtual space isn't practical. Where
@@ -119,21 +120,43 @@ io_mapping_unmap(void __iomem *vaddr)
 #else
 
 #include <linux/uaccess.h>
-
-/* this struct isn't actually defined anywhere */
-struct io_mapping;
+#include <asm/pgtable_types.h>
 
 /* Create the io_mapping object*/
 static inline struct io_mapping *
 io_mapping_create_wc(resource_size_t base, unsigned long size)
 {
-	return (struct io_mapping __force *) ioremap_wc(base, size);
+	struct io_mapping *iomap;
+
+	iomap = kmalloc(sizeof(*iomap), GFP_KERNEL);
+	if (!iomap)
+		return NULL;
+
+	iomap->base = base;
+	iomap->size = size;
+	iomap->iomem = ioremap_wc(base, size);
+	iomap->prot = pgprot_writecombine(PAGE_KERNEL_IO);
+
+	return iomap;
 }
 
 static inline void
 io_mapping_free(struct io_mapping *mapping)
 {
-	iounmap((void __force __iomem *) mapping);
+	iounmap(mapping->iomem);
+	kfree(mapping);
+}
+
+/* Non-atomic map/unmap */
+static inline void __iomem *
+io_mapping_map_wc(struct io_mapping *mapping, unsigned long offset)
+{
+	return mapping->iomem + offset;
+}
+
+static inline void
+io_mapping_unmap(void __iomem *vaddr)
+{
 }
 
 /* Atomic map/unmap */
@@ -142,25 +165,14 @@ io_mapping_map_atomic_wc(struct io_mapping *mapping,
 			 unsigned long offset)
 {
 	pagefault_disable();
-	return ((char __force __iomem *) mapping) + offset;
+	return io_mapping_map_wc(mapping, offset);
 }
 
 static inline void
 io_mapping_unmap_atomic(void __iomem *vaddr)
 {
+	io_mapping_unmap(vaddr);
 	pagefault_enable();
-}
-
-/* Non-atomic map/unmap */
-static inline void __iomem *
-io_mapping_map_wc(struct io_mapping *mapping, unsigned long offset)
-{
-	return ((char __force __iomem *) mapping) + offset;
-}
-
-static inline void
-io_mapping_unmap(void __iomem *vaddr)
-{
 }
 
 #endif /* HAVE_ATOMIC_IOMAP */
