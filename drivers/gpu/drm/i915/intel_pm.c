@@ -4914,32 +4914,30 @@ static void gen6_enable_rps(struct drm_device *dev)
 static void __gen6_update_ring_freq(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	int min_freq = 15;
+	unsigned int max_ia_freq, min_ia_freq, min_ring_freq;
 	unsigned int gpu_freq;
-	unsigned int max_ia_freq, min_ring_freq;
-	int scaling_factor = 180;
 	struct cpufreq_policy *policy;
 
 	WARN_ON(!mutex_is_locked(&dev_priv->rps.hw_lock));
 
+	min_ring_freq = I915_READ(DCLK) & 0xf;
+	/* convert DDR frequency from units of 266.6MHz to bandwidth */
+	min_ring_freq = mult_frac(min_ring_freq, 8, 3);
+
 	policy = cpufreq_cpu_get(0);
 	if (policy) {
-		max_ia_freq = policy->cpuinfo.max_freq;
+		/* Convert from kHz to MHz */
+		max_ia_freq = policy->cpuinfo.max_freq / 1000;
+		min_ia_freq = policy->cpuinfo.min_freq / 1000;
 		cpufreq_cpu_put(policy);
 	} else {
 		/*
 		 * Default to measured freq if none found, PCU will ensure we
 		 * don't go over
 		 */
-		max_ia_freq = tsc_khz;
+		max_ia_freq = tsc_khz / 1000;
+		min_ia_freq = min_ring_freq;
 	}
-
-	/* Convert from kHz to MHz */
-	max_ia_freq /= 1000;
-
-	min_ring_freq = I915_READ(DCLK) & 0xf;
-	/* convert DDR frequency from units of 266.6MHz to bandwidth */
-	min_ring_freq = mult_frac(min_ring_freq, 8, 3);
 
 	/*
 	 * For each potential GPU frequency, load a ring frequency we'd like
@@ -4948,7 +4946,6 @@ static void __gen6_update_ring_freq(struct drm_device *dev)
 	 */
 	for (gpu_freq = dev_priv->rps.max_freq; gpu_freq >= dev_priv->rps.min_freq;
 	     gpu_freq--) {
-		int diff = dev_priv->rps.max_freq_softlimit - gpu_freq;
 		unsigned int ia_freq = 0, ring_freq = 0;
 
 		if (INTEL_INFO(dev)->gen >= 8) {
@@ -4959,17 +4956,16 @@ static void __gen6_update_ring_freq(struct drm_device *dev)
 			ring_freq = max(min_ring_freq, ring_freq);
 			/* leave ia_freq as the default, chosen by cpufreq */
 		} else {
+			const int scaling_factor = 180;
+			int diff;
+
 			/* On older processors, there is no separate ring
 			 * clock domain, so in order to boost the bandwidth
 			 * of the ring, we need to upclock the CPU (ia_freq).
-			 *
-			 * For GPU frequencies less than 750MHz,
-			 * just use the lowest ring freq.
 			 */
-			if (gpu_freq < min_freq)
-				ia_freq = 800;
-			else
-				ia_freq = max_ia_freq - ((diff * scaling_factor) / 2);
+			diff = dev_priv->rps.max_freq_softlimit - gpu_freq;
+			diff = max_ia_freq - diff * scaling_factor / 2;
+			ia_freq = max((int)min_ia_freq, diff);
 			ia_freq = DIV_ROUND_CLOSEST(ia_freq, 100);
 		}
 
