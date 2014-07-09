@@ -4294,10 +4294,12 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 	switch (new_power) {
 	case LOW_POWER:
 		/* Upclock if more than 95% busy over 16ms */
+		dev_priv->rps.up_threshold = 95;
 		I915_WRITE(GEN6_RP_UP_EI, 12500);
 		I915_WRITE(GEN6_RP_UP_THRESHOLD, 11800);
 
 		/* Downclock if less than 85% busy over 32ms */
+		dev_priv->rps.down_threshold = 85;
 		I915_WRITE(GEN6_RP_DOWN_EI, 25000);
 		I915_WRITE(GEN6_RP_DOWN_THRESHOLD, 21250);
 
@@ -4312,10 +4314,12 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 
 	case BETWEEN:
 		/* Upclock if more than 90% busy over 13ms */
+		dev_priv->rps.up_threshold = 90;
 		I915_WRITE(GEN6_RP_UP_EI, 10250);
 		I915_WRITE(GEN6_RP_UP_THRESHOLD, 9225);
 
 		/* Downclock if less than 75% busy over 32ms */
+		dev_priv->rps.down_threshold = 75;
 		I915_WRITE(GEN6_RP_DOWN_EI, 25000);
 		I915_WRITE(GEN6_RP_DOWN_THRESHOLD, 18750);
 
@@ -4330,10 +4334,12 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 
 	case HIGH_POWER:
 		/* Upclock if more than 85% busy over 10ms */
+		dev_priv->rps.up_threshold = 85;
 		I915_WRITE(GEN6_RP_UP_EI, 8000);
 		I915_WRITE(GEN6_RP_UP_THRESHOLD, 6800);
 
 		/* Downclock if less than 60% busy over 32ms */
+		dev_priv->rps.down_threshold = 60;
 		I915_WRITE(GEN6_RP_DOWN_EI, 25000);
 		I915_WRITE(GEN6_RP_DOWN_THRESHOLD, 15000);
 
@@ -4453,6 +4459,7 @@ static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 				& GENFREQSTATUS) == 0, 5))
 		DRM_ERROR("timed out waiting for Punit\n");
 
+	gen6_set_rps_thresholds(dev_priv, val);
 	vlv_force_gfx_clock(dev_priv, false);
 
 	I915_WRITE(GEN6_PMINTRMSK, gen6_rps_pm_mask(dev_priv, val));
@@ -4538,6 +4545,7 @@ void valleyview_set_rps(struct drm_device *dev, u8 val)
 				 vlv_gpu_freq(dev_priv, val), val);
 
 		vlv_punit_write(dev_priv, PUNIT_REG_GPU_FREQ_REQ, val);
+		gen6_set_rps_thresholds(dev_priv, val);
 	}
 
 	I915_WRITE(GEN6_PMINTRMSK, gen6_rps_pm_mask(dev_priv, val));
