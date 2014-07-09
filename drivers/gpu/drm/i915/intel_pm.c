@@ -4459,6 +4459,18 @@ static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 	I915_WRITE(GEN6_PMINTRMSK, gen6_rps_pm_mask(dev_priv, val));
 }
 
+void gen6_rps_busy(struct drm_i915_private *dev_priv)
+{
+	mutex_lock(&dev_priv->rps.hw_lock);
+	if (dev_priv->rps.enabled) {
+		if (dev_priv->pm_rps_events & (GEN6_PM_RP_DOWN_EI_EXPIRED | GEN6_PM_RP_UP_EI_EXPIRED))
+			gen6_rps_reset_ei(dev_priv);
+		I915_WRITE(GEN6_PMINTRMSK,
+			   gen6_rps_pm_mask(dev_priv, dev_priv->rps.cur_freq));
+	}
+	mutex_unlock(&dev_priv->rps.hw_lock);
+}
+
 void gen6_rps_idle(struct drm_i915_private *dev_priv)
 {
 	struct drm_device *dev = dev_priv->dev;
@@ -4474,6 +4486,7 @@ void gen6_rps_idle(struct drm_i915_private *dev_priv)
 		else
 			gen6_set_rps(dev_priv->dev, val);
 		dev_priv->rps.last_adj = 0;
+		I915_WRITE(GEN6_PMINTRMSK, 0xffffffff);
 	}
 
 	while (!list_empty(&dev_priv->rps.clients))
@@ -4490,6 +4503,7 @@ void gen6_rps_boost(struct drm_i915_private *dev_priv,
 	mutex_lock(&dev_priv->rps.hw_lock);
 	val = dev_priv->rps.max_freq_softlimit;
 	if (dev_priv->rps.enabled &&
+	    dev_priv->mm.busy &&
 	    dev_priv->rps.cur_freq < val &&
 	    (file_priv == NULL || list_empty(&file_priv->rps_boost))) {
 		if (IS_VALLEYVIEW(dev))
@@ -6171,6 +6185,8 @@ void intel_suspend_gt_powersave(struct drm_device *dev)
 void intel_disable_gt_powersave(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
+
+	WARN_ON(dev_priv->mm.busy);
 
 	/* Interrupts should be disabled already to avoid re-arming. */
 	WARN_ON(intel_irqs_enabled(dev_priv));
