@@ -1117,6 +1117,7 @@ int i915_ppgtt_init_hw(struct drm_device *dev)
 
 	return 0;
 }
+
 struct i915_hw_ppgtt *
 i915_ppgtt_create(struct drm_device *dev, struct drm_i915_file_private *fpriv)
 {
@@ -1135,7 +1136,7 @@ i915_ppgtt_create(struct drm_device *dev, struct drm_i915_file_private *fpriv)
 
 	ppgtt->file_priv = fpriv;
 
-	trace_i915_ppgtt_create(&ppgtt->base);
+	trace_i915_vm_create(&ppgtt->base);
 
 	return ppgtt;
 }
@@ -1145,7 +1146,7 @@ void __i915_vm_free(struct kref *kref)
 	struct i915_address_space *vm =
 		container_of(kref, struct i915_address_space, ref);
 
-	trace_i915_ppgtt_release(&ppgtt->base);
+	trace_i915_vm_free(vm);
 
 	/* vmas should already be unbound */
 	WARN_ON(!list_empty(&vm->active_list));

@@ -1006,6 +1006,7 @@ struct intel_gen6_power_mgmt {
 	/* work and pm_iir are protected by dev_priv->irq_lock */
 	struct work_struct work;
 	u32 pm_iir;
+	u32 pm_events;
 
 	/* Frequencies are stored in potentially platform dependent multiples.
 	 * In other words, *_freq needs to be multiplied by X to be interesting.
@@ -1583,7 +1584,6 @@ struct drm_i915_private {
 	};
 	u32 gt_irq_mask;
 	u32 pm_irq_mask;
-	u32 pm_rps_events;
 	u32 pipestat_irq_mask[I915_MAX_PIPES];
 
 	struct delayed_work hotplug_work;

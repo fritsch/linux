@@ -261,8 +261,8 @@ void gen6_enable_rps_interrupts(struct drm_device *dev)
 
 	spin_lock_irq(&dev_priv->irq_lock);
 	WARN_ON(dev_priv->rps.pm_iir);
-	gen6_enable_pm_irq(dev_priv, dev_priv->pm_rps_events);
-	I915_WRITE(gen6_pm_iir(dev_priv), dev_priv->pm_rps_events);
+	gen6_enable_pm_irq(dev_priv, dev_priv->rps.pm_events);
+	I915_WRITE(gen6_pm_iir(dev_priv), dev_priv->rps.pm_events);
 	spin_unlock_irq(&dev_priv->irq_lock);
 }
 
@@ -273,7 +273,7 @@ void gen6_disable_rps_interrupts(struct drm_device *dev)
 	I915_WRITE(GEN6_PMINTRMSK, INTEL_INFO(dev_priv)->gen >= 8 ?
 		   ~GEN8_PMINTR_REDIRECT_TO_NON_DISP : ~0);
 	I915_WRITE(gen6_pm_ier(dev_priv), I915_READ(gen6_pm_ier(dev_priv)) &
-				~dev_priv->pm_rps_events);
+				~dev_priv->rps.pm_events);
 	/* Complete PM interrupt masking here doesn't race with the rps work
 	 * item again unmasking PM interrupts because that is using a different
 	 * register (PMIMR) to mask PM interrupts. The only risk is in leaving
@@ -283,7 +283,7 @@ void gen6_disable_rps_interrupts(struct drm_device *dev)
 	dev_priv->rps.pm_iir = 0;
 	spin_unlock_irq(&dev_priv->irq_lock);
 
-	I915_WRITE(gen6_pm_iir(dev_priv), dev_priv->pm_rps_events);
+	I915_WRITE(gen6_pm_iir(dev_priv), dev_priv->rps.pm_events);
 }
 
 /**
@@ -1063,13 +1063,13 @@ static void gen6_pm_rps_work(struct work_struct *work)
 	pm_iir = dev_priv->rps.pm_iir;
 	dev_priv->rps.pm_iir = 0;
 	/* Make sure not to corrupt PMIMR state used by ringbuffer on GEN6 */
-	gen6_enable_pm_irq(dev_priv, dev_priv->pm_rps_events);
+	gen6_enable_pm_irq(dev_priv, dev_priv->rps.pm_events);
 	spin_unlock_irq(&dev_priv->irq_lock);
 
 	/* Make sure we didn't queue anything we're not going to process. */
-	WARN_ON(pm_iir & ~dev_priv->pm_rps_events);
+	WARN_ON(pm_iir & ~dev_priv->rps.pm_events);
 
-	if ((pm_iir & dev_priv->pm_rps_events) == 0)
+	if ((pm_iir & dev_priv->rps.pm_events) == 0)
 		return;
 
 	mutex_lock(&dev_priv->rps.hw_lock);
@@ -1323,9 +1323,9 @@ static irqreturn_t gen8_gt_irq_handler(struct drm_device *dev,
 
 	if (master_ctl & GEN8_GT_PM_IRQ) {
 		tmp = I915_READ(GEN8_GT_IIR(2));
-		if (tmp & dev_priv->pm_rps_events) {
+		if (tmp & dev_priv->rps.pm_events) {
 			I915_WRITE(GEN8_GT_IIR(2),
-				   tmp & dev_priv->pm_rps_events);
+				   tmp & dev_priv->rps.pm_events);
 			ret = IRQ_HANDLED;
 			gen6_rps_irq_handler(dev_priv, tmp);
 		} else
@@ -1634,10 +1634,10 @@ static void gen6_rps_irq_handler(struct drm_i915_private *dev_priv, u32 pm_iir)
 		      "GEN9: unexpected RPS IRQ\n"))
 		return;
 
-	if (pm_iir & dev_priv->pm_rps_events) {
+	if (pm_iir & dev_priv->rps.pm_events) {
 		spin_lock(&dev_priv->irq_lock);
-		dev_priv->rps.pm_iir |= pm_iir & dev_priv->pm_rps_events;
-		gen6_disable_pm_irq(dev_priv, pm_iir & dev_priv->pm_rps_events);
+		dev_priv->rps.pm_iir |= pm_iir & dev_priv->rps.pm_events;
+		gen6_disable_pm_irq(dev_priv, pm_iir & dev_priv->rps.pm_events);
 		spin_unlock(&dev_priv->irq_lock);
 
 		queue_work(dev_priv->wq, &dev_priv->rps.work);
@@ -3225,7 +3225,7 @@ static void gen5_gt_irq_postinstall(struct drm_device *dev)
 	GEN5_IRQ_INIT(GT, dev_priv->gt_irq_mask, gt_irqs);
 
 	if (INTEL_INFO(dev)->gen >= 6) {
-		pm_irqs |= dev_priv->pm_rps_events;
+		pm_irqs |= dev_priv->rps.pm_events;
 
 		if (HAS_VEBOX(dev))
 			pm_irqs |= PM_VEBOX_USER_INTERRUPT;
@@ -3438,7 +3438,7 @@ static void gen8_gt_irq_postinstall(struct drm_i915_private *dev_priv)
 	dev_priv->pm_irq_mask = 0xffffffff;
 	GEN8_IRQ_INIT_NDX(GT, 0, ~gt_interrupts[0], gt_interrupts[0]);
 	GEN8_IRQ_INIT_NDX(GT, 1, ~gt_interrupts[1], gt_interrupts[1]);
-	GEN8_IRQ_INIT_NDX(GT, 2, dev_priv->pm_irq_mask, dev_priv->pm_rps_events);
+	GEN8_IRQ_INIT_NDX(GT, 2, dev_priv->pm_irq_mask, dev_priv->rps.pm_events);
 	GEN8_IRQ_INIT_NDX(GT, 3, ~gt_interrupts[3], gt_interrupts[3]);
 }
 
@@ -4243,9 +4243,9 @@ void intel_irq_init(struct drm_i915_private *dev_priv)
 	/* Let's track the enabled rps events */
 	if (IS_VALLEYVIEW(dev_priv) && !IS_CHERRYVIEW(dev_priv))
 		/* WaGsvRC0ResidencyMethod:vlv */
-		dev_priv->pm_rps_events = GEN6_PM_RP_DOWN_EI_EXPIRED | GEN6_PM_RP_UP_EI_EXPIRED;
+		dev_priv->rps.pm_events = GEN6_PM_RP_DOWN_EI_EXPIRED | GEN6_PM_RP_UP_EI_EXPIRED;
 	else
-		dev_priv->pm_rps_events = GEN6_PM_RPS_EVENTS;
+		dev_priv->rps.pm_events = GEN6_PM_RPS_EVENTS;
 
 	setup_timer(&dev_priv->gpu_error.hangcheck_timer,
 		    i915_hangcheck_elapsed,

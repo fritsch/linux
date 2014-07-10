@@ -501,6 +501,18 @@ DECLARE_EVENT_CLASS(i915_gem_request,
 		      __entry->dev, __entry->ring, __entry->seqno)
 );
 
+/**
+ * DOC: switch_mm tracepoint
+ *
+ * This tracepoint allows tracking of the mm switch, which is an important point
+ * in the lifetime of the vm in the legacy submission path. This tracepoint is
+ * called only if full ppgtt is enabled.
+ */
+DEFINE_EVENT(i915_gem_request, i915_gem_request_switch_mm,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
 DEFINE_EVENT(i915_gem_request, i915_gem_request_emit_flush,
 	    TP_PROTO(struct i915_gem_request *rq),
 	    TP_ARGS(rq)
@@ -663,7 +675,7 @@ TRACE_EVENT(intel_gpu_freq_change,
 );
 
 /**
- * DOC: i915_ppgtt_create and i915_ppgtt_release tracepoints
+ * DOC: i915_vm_create and i915_vm_free tracepoints
  *
  * With full ppgtt enabled each process using drm will allocate at least one
  * translation table. With these traces it is possible to keep track of the
@@ -672,7 +684,7 @@ TRACE_EVENT(intel_gpu_freq_change,
  * These traces identify the ppgtt through the vm pointer, which is also printed
  * by the i915_vma_bind and i915_vma_unbind tracepoints.
  */
-DECLARE_EVENT_CLASS(i915_ppgtt,
+DECLARE_EVENT_CLASS(i915_vm,
 	TP_PROTO(struct i915_address_space *vm),
 	TP_ARGS(vm),
 
@@ -689,12 +701,12 @@ DECLARE_EVENT_CLASS(i915_ppgtt,
 	TP_printk("dev=%u, vm=%p", __entry->dev, __entry->vm)
 )
 
-DEFINE_EVENT(i915_ppgtt, i915_ppgtt_create,
+DEFINE_EVENT(i915_vm, i915_vm_create,
 	TP_PROTO(struct i915_address_space *vm),
 	TP_ARGS(vm)
 );
 
-DEFINE_EVENT(i915_ppgtt, i915_ppgtt_release,
+DEFINE_EVENT(i915_vm, i915_vm_free,
 	TP_PROTO(struct i915_address_space *vm),
 	TP_ARGS(vm)
 );
@@ -734,36 +746,6 @@ DEFINE_EVENT(i915_context, i915_context_create,
 DEFINE_EVENT(i915_context, i915_context_free,
 	TP_PROTO(struct intel_context *ctx),
 	TP_ARGS(ctx)
-);
-
-/**
- * DOC: switch_mm tracepoint
- *
- * This tracepoint allows tracking of the mm switch, which is an important point
- * in the lifetime of the vm in the legacy submission path. This tracepoint is
- * called only if full ppgtt is enabled.
- */
-TRACE_EVENT(switch_mm,
-	TP_PROTO(struct intel_engine_cs *ring, struct intel_context *to),
-
-	TP_ARGS(ring, to),
-
-	TP_STRUCT__entry(
-			__field(u32, ring)
-			__field(struct intel_context *, to)
-			__field(struct i915_address_space *, vm)
-			__field(u32, dev)
-	),
-
-	TP_fast_assign(
-			__entry->ring = ring->id;
-			__entry->to = to;
-			__entry->vm = to->ppgtt? &to->ppgtt->base : NULL;
-			__entry->dev = ring->dev->primary->index;
-	),
-
-	TP_printk("dev=%u, ring=%u, ctx=%p, ctx_vm=%p",
-		  __entry->dev, __entry->ring, __entry->to, __entry->vm)
 );
 
 #endif /* _I915_TRACE_H_ */

@@ -604,7 +604,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 		}
 
 		if (to->ppgtt) {
-			trace_switch_mm(ring, to);
+			trace_i915_gem_request_switch_mm(rq);
 			ret = to->ppgtt->switch_mm(rq, to->ppgtt);
 			if (ret)
 				goto unpin_out;
