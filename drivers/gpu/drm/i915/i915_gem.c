@@ -4470,12 +4470,7 @@ int i915_gem_init(struct drm_device *dev)
 			DRM_DEBUG_DRIVER("allow wake ack timed out\n");
 	}
 
-	ret = i915_gem_init_userptr(dev);
-	if (ret) {
-		mutex_unlock(&dev->struct_mutex);
-		return ret;
-	}
-
+	i915_gem_init_userptr(dev);
 	i915_gem_init_global_gtt(dev);
 
 	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
