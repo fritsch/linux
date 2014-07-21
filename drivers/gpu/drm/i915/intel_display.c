@@ -11034,8 +11034,7 @@ static int __intel_set_mode(struct drm_crtc *crtc,
 	 * on the DPLL.
 	 */
 	for_each_intel_crtc_masked(dev, modeset_pipes, intel_crtc) {
-		struct drm_framebuffer *old_fb = crtc->primary->fb;
-		struct drm_i915_gem_object *old_obj = intel_fb_obj(old_fb);
+		struct drm_i915_gem_object *old_obj = intel_fb_obj(crtc->primary->fb);
 		struct drm_i915_gem_object *obj = intel_fb_obj(fb);
 
 		if (!assert_pipe_disabled(dev_priv, intel_crtc->pipe) ||
@@ -11059,7 +11058,7 @@ static int __intel_set_mode(struct drm_crtc *crtc,
 			mutex_unlock(&dev->struct_mutex);
 			goto done;
 		}
-		if (old_fb)
+		if (old_obj)
 			intel_unpin_fb_obj(old_obj);
 		i915_gem_track_fb(old_obj, obj,
 				  INTEL_FRONTBUFFER_PRIMARY(intel_crtc->pipe));
