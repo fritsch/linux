@@ -4283,9 +4283,9 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 		break;
 	}
 	/* Max/min bins are special */
-	if (val == dev_priv->rps.min_freq_softlimit)
+	if (val <= dev_priv->rps.min_freq_softlimit)
 		new_power = LOW_POWER;
-	if (val == dev_priv->rps.max_freq_softlimit)
+	if (val >= dev_priv->rps.max_freq_softlimit)
 		new_power = HIGH_POWER;
 	if (new_power == dev_priv->rps.power)
 		return;
@@ -4383,8 +4383,8 @@ void gen6_set_rps(struct drm_device *dev, u8 val)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	WARN_ON(!mutex_is_locked(&dev_priv->rps.hw_lock));
-	WARN_ON(val > dev_priv->rps.max_freq_softlimit);
-	WARN_ON(val < dev_priv->rps.min_freq_softlimit);
+	WARN_ON(val > dev_priv->rps.max_freq);
+	WARN_ON(val < dev_priv->rps.min_freq);
 
 	/* min/max delay may still have been modified so be sure to
 	 * write the limits value.
@@ -4426,10 +4426,11 @@ void gen6_set_rps(struct drm_device *dev, u8 val)
 static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 {
 	struct drm_device *dev = dev_priv->dev;
+	u32 val = dev_priv->rps.min_freq;
 
 	/* Latest VLV doesn't need to force the gfx clock */
 	if (dev->pdev->revision >= 0xd) {
-		valleyview_set_rps(dev_priv->dev, dev_priv->rps.min_freq_softlimit);
+		valleyview_set_rps(dev_priv->dev, val);
 		return;
 	}
 
@@ -4437,7 +4438,7 @@ static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 	 * When we are idle.  Drop to min voltage state.
 	 */
 
-	if (dev_priv->rps.cur_freq <= dev_priv->rps.min_freq_softlimit)
+	if (dev_priv->rps.cur_freq <= val)
 		return;
 
 	/* Mask turbo interrupt so that they will not come in between */
@@ -4445,10 +4446,9 @@ static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 
 	vlv_force_gfx_clock(dev_priv, true);
 
-	dev_priv->rps.cur_freq = dev_priv->rps.min_freq_softlimit;
+	dev_priv->rps.cur_freq = val;
 
-	vlv_punit_write(dev_priv, PUNIT_REG_GPU_FREQ_REQ,
-					dev_priv->rps.min_freq_softlimit);
+	vlv_punit_write(dev_priv, PUNIT_REG_GPU_FREQ_REQ, val);
 
 	if (wait_for(((vlv_punit_read(dev_priv, PUNIT_REG_GPU_FREQ_STS))
 				& GENFREQSTATUS) == 0, 5))
@@ -4456,8 +4456,7 @@ static void vlv_set_rps_idle(struct drm_i915_private *dev_priv)
 
 	vlv_force_gfx_clock(dev_priv, false);
 
-	I915_WRITE(GEN6_PMINTRMSK,
-		   gen6_rps_pm_mask(dev_priv, dev_priv->rps.cur_freq));
+	I915_WRITE(GEN6_PMINTRMSK, gen6_rps_pm_mask(dev_priv, val));
 }
 
 void gen6_rps_idle(struct drm_i915_private *dev_priv)
@@ -4466,12 +4465,14 @@ void gen6_rps_idle(struct drm_i915_private *dev_priv)
 
 	mutex_lock(&dev_priv->rps.hw_lock);
 	if (dev_priv->rps.enabled) {
+		u32 val = dev_priv->rps.min_freq;
+
 		if (IS_CHERRYVIEW(dev))
-			valleyview_set_rps(dev_priv->dev, dev_priv->rps.min_freq_softlimit);
+			valleyview_set_rps(dev_priv->dev, val);
 		else if (IS_VALLEYVIEW(dev))
 			vlv_set_rps_idle(dev_priv);
 		else
-			gen6_set_rps(dev_priv->dev, dev_priv->rps.min_freq_softlimit);
+			gen6_set_rps(dev_priv->dev, val);
 		dev_priv->rps.last_adj = 0;
 	}
 
@@ -4510,8 +4511,8 @@ void valleyview_set_rps(struct drm_device *dev, u8 val)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	WARN_ON(!mutex_is_locked(&dev_priv->rps.hw_lock));
-	WARN_ON(val > dev_priv->rps.max_freq_softlimit);
-	WARN_ON(val < dev_priv->rps.min_freq_softlimit);
+	WARN_ON(val > dev_priv->rps.max_freq);
+	WARN_ON(val < dev_priv->rps.min_freq);
 
 	if (WARN_ONCE(IS_CHERRYVIEW(dev) && (val & 1),
 		      "Odd GPU freq value\n"))
@@ -4870,7 +4871,7 @@ static void gen6_enable_rps(struct drm_device *dev)
 	}
 
 	dev_priv->rps.power = HIGH_POWER; /* force a reset */
-	gen6_set_rps(dev_priv->dev, dev_priv->rps.min_freq_softlimit);
+	gen6_set_rps(dev_priv->dev, dev_priv->rps.min_freq);
 
 	gen6_enable_rps_interrupts(dev);
 
@@ -4926,7 +4927,7 @@ static void __gen6_update_ring_freq(struct drm_device *dev)
 	 * to use for memory access.  We do this by specifying the IA frequency
 	 * the PCU should use as a reference to determine the ring frequency.
 	 */
-	for (gpu_freq = dev_priv->rps.max_freq_softlimit; gpu_freq >= dev_priv->rps.min_freq_softlimit;
+	for (gpu_freq = dev_priv->rps.max_freq; gpu_freq >= dev_priv->rps.min_freq;
 	     gpu_freq--) {
 		int diff = dev_priv->rps.max_freq_softlimit - gpu_freq;
 		unsigned int ia_freq = 0, ring_freq = 0;
