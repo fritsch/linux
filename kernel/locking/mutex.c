@@ -648,6 +648,17 @@ mutex_lock_interruptible_nested(struct mutex *lock, unsigned int subclass)
 
 EXPORT_SYMBOL_GPL(mutex_lock_interruptible_nested);
 
+int __sched
+mutex_lock_wrapper_nested(struct mutex *lock, unsigned int subclass,
+			  long state, unsigned long ip)
+{
+	might_sleep();
+	return __mutex_lock_common(lock, state,
+				   subclass, NULL, ip, NULL, 0);
+}
+
+EXPORT_SYMBOL_GPL(mutex_lock_wrapper_nested);
+
 static inline int
 ww_mutex_deadlock_injection(struct ww_mutex *lock, struct ww_acquire_ctx *ctx)
 {
@@ -770,6 +781,9 @@ __mutex_lock_killable_slowpath(struct mutex *lock);
 static noinline int __sched
 __mutex_lock_interruptible_slowpath(struct mutex *lock);
 
+static noinline int __sched
+__mutex_lock_wrapper_slowpath(struct mutex *lock, long state, unsigned long ip);
+
 /**
  * mutex_lock_interruptible - acquire the mutex, interruptible
  * @lock: the mutex to be acquired
@@ -795,6 +809,21 @@ int __sched mutex_lock_interruptible(struct mutex *lock)
 }
 
 EXPORT_SYMBOL(mutex_lock_interruptible);
+
+int __sched mutex_lock_wrapper(struct mutex *lock, long state, unsigned long ip)
+{
+	int ret;
+
+	might_sleep();
+	ret =  __mutex_fastpath_lock_retval(&lock->count);
+	if (likely(!ret)) {
+		mutex_set_owner(lock);
+		return 0;
+	} else
+		return __mutex_lock_wrapper_slowpath(lock, state, ip);
+}
+
+EXPORT_SYMBOL(mutex_lock_wrapper);
 
 int __sched mutex_lock_killable(struct mutex *lock)
 {
@@ -831,6 +860,13 @@ __mutex_lock_interruptible_slowpath(struct mutex *lock)
 {
 	return __mutex_lock_common(lock, TASK_INTERRUPTIBLE, 0,
 				   NULL, _RET_IP_, NULL, 0);
+}
+
+static noinline int __sched
+__mutex_lock_wrapper_slowpath(struct mutex *lock, long state, unsigned long ip)
+{
+	return __mutex_lock_common(lock, state, 0,
+				   NULL, ip, NULL, 0);
 }
 
 static noinline int __sched

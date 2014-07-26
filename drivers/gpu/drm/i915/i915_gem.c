@@ -145,7 +145,9 @@ int i915_mutex_lock_interruptible(struct drm_device *dev)
 	if (ret)
 		return ret;
 
-	ret = mutex_lock_interruptible(&dev->struct_mutex);
+	ret = mutex_lock_wrapper(&dev->struct_mutex,
+				 TASK_INTERRUPTIBLE,
+				 _RET_IP_);
 	if (ret)
 		return ret;
 
