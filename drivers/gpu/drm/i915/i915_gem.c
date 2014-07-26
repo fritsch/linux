@@ -4649,8 +4649,6 @@ void i915_gem_release(struct drm_device *dev, struct drm_file *file)
 {
 	struct drm_i915_file_private *file_priv = file->driver_priv;
 
-	cancel_delayed_work_sync(&file_priv->mm.idle_work);
-
 	/* Clean up our request list when the client is going away, so that
 	 * later retire_requests won't dereference our soon-to-be-gone
 	 * file_priv.
@@ -4666,15 +4664,12 @@ void i915_gem_release(struct drm_device *dev, struct drm_file *file)
 		rq->file_priv = NULL;
 	}
 	spin_unlock(&file_priv->mm.lock);
-}
 
-static void
-i915_gem_file_idle_work_handler(struct work_struct *work)
-{
-	struct drm_i915_file_private *file_priv =
-		container_of(work, typeof(*file_priv), mm.idle_work.work);
-
-	atomic_set(&file_priv->rps_wait_boost, false);
+	if (!list_empty(&file_priv->rps_boost)) {
+		mutex_lock(&to_i915(dev)->rps.hw_lock);
+		list_del(&file_priv->rps_boost);
+		mutex_unlock(&to_i915(dev)->rps.hw_lock);
+	}
 }
 
 int i915_gem_open(struct drm_device *dev, struct drm_file *file)
@@ -4691,11 +4686,10 @@ int i915_gem_open(struct drm_device *dev, struct drm_file *file)
 	file->driver_priv = file_priv;
 	file_priv->dev_priv = dev->dev_private;
 	file_priv->file = file;
+	INIT_LIST_HEAD(&file_priv->rps_boost);
 
 	spin_lock_init(&file_priv->mm.lock);
 	INIT_LIST_HEAD(&file_priv->mm.request_list);
-	INIT_DELAYED_WORK(&file_priv->mm.idle_work,
-			  i915_gem_file_idle_work_handler);
 
 	ret = i915_gem_context_open(dev, file);
 	if (ret)

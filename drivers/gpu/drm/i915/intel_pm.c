@@ -4474,20 +4474,33 @@ void gen6_rps_idle(struct drm_i915_private *dev_priv)
 			gen6_set_rps(dev_priv->dev, dev_priv->rps.min_freq_softlimit);
 		dev_priv->rps.last_adj = 0;
 	}
+
+	while (!list_empty(&dev_priv->rps.clients))
+		list_del_init(dev_priv->rps.clients.next);
 	mutex_unlock(&dev_priv->rps.hw_lock);
 }
 
-void gen6_rps_boost(struct drm_i915_private *dev_priv)
+void gen6_rps_boost(struct drm_i915_private *dev_priv,
+		    struct drm_i915_file_private *file_priv)
 {
 	struct drm_device *dev = dev_priv->dev;
+	u32 val;
 
 	mutex_lock(&dev_priv->rps.hw_lock);
-	if (dev_priv->rps.enabled) {
+	val = dev_priv->rps.max_freq_softlimit;
+	if (dev_priv->rps.enabled &&
+	    dev_priv->rps.cur_freq < val &&
+	    (file_priv == NULL || list_empty(&file_priv->rps_boost))) {
 		if (IS_VALLEYVIEW(dev))
-			valleyview_set_rps(dev_priv->dev, dev_priv->rps.max_freq_softlimit);
+			valleyview_set_rps(dev_priv->dev, val);
 		else
-			gen6_set_rps(dev_priv->dev, dev_priv->rps.max_freq_softlimit);
+			gen6_set_rps(dev_priv->dev, val);
 		dev_priv->rps.last_adj = 0;
+
+		if (file_priv != NULL) {
+			file_priv->rps_boosts++;
+			list_add(&file_priv->rps_boost, &dev_priv->rps.clients);
+		}
 	}
 	mutex_unlock(&dev_priv->rps.hw_lock);
 }
@@ -7276,7 +7289,7 @@ static void __intel_rps_boost_work(struct work_struct *work)
 	struct request_boost *boost = container_of(work, struct request_boost, work);
 
 	if (!i915_request_complete(boost->rq))
-		gen6_rps_boost(boost->rq->i915);
+		gen6_rps_boost(boost->rq->i915, NULL);
 
 	i915_request_put__unlocked(boost->rq);
 	kfree(boost);
@@ -7308,6 +7321,7 @@ void intel_pm_setup(struct drm_device *dev)
 
 	INIT_DELAYED_WORK(&dev_priv->rps.delayed_resume_work,
 			  intel_gen6_powersave_work);
+	INIT_LIST_HEAD(&dev_priv->rps.clients);
 
 	dev_priv->pm.suspended = false;
 }

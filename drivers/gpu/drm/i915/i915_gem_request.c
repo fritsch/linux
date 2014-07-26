@@ -402,14 +402,6 @@ static bool missed_irq(struct i915_gem_request *rq)
 	return test_bit(rq->engine->id, &rq->i915->gpu_error.missed_irq_rings);
 }
 
-static bool can_wait_boost(struct drm_i915_file_private *file_priv)
-{
-	if (file_priv == NULL)
-		return true;
-
-	return !atomic_xchg(&file_priv->rps_wait_boost, true);
-}
-
 bool __i915_request_complete__wa(struct i915_gem_request *rq)
 {
 	struct drm_i915_private *dev_priv = rq->i915;
@@ -467,13 +459,8 @@ int __i915_request_wait(struct i915_gem_request *rq,
 
 	timeout_expire = timeout_ns ? jiffies + nsecs_to_jiffies((u64)*timeout_ns) : 0;
 
-	if (INTEL_INFO(rq->i915)->gen >= 6 && rq->engine->id == RCS && can_wait_boost(file_priv)) {
-		gen6_rps_boost(rq->i915);
-		if (file_priv)
-			mod_delayed_work(rq->i915->wq,
-					 &file_priv->mm.idle_work,
-					 msecs_to_jiffies(100));
-	}
+	if (rq->engine->id == RCS && INTEL_INFO(rq->i915)->gen >= 6)
+		gen6_rps_boost(rq->i915, file_priv);
 
 	if (!irq_test_in_progress) {
 		if (WARN_ON(!intel_irqs_enabled(rq->i915)))
