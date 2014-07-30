@@ -837,38 +837,32 @@ static void i915_digport_work_func(struct work_struct *work)
 {
 	struct drm_i915_private *dev_priv =
 		container_of(work, struct drm_i915_private, dig_port_work);
-	u32 long_port_mask, short_port_mask;
-	struct intel_digital_port *intel_dig_port;
-	int i, ret;
-	u32 old_bits = 0;
+	u32 long_mask, valid_mask, old_bits = 0;
+	int i;
 
 	spin_lock_irq(&dev_priv->irq_lock);
-	long_port_mask = dev_priv->long_hpd_port_mask;
+
+	long_mask = dev_priv->long_hpd_port_mask;
 	dev_priv->long_hpd_port_mask = 0;
-	short_port_mask = dev_priv->short_hpd_port_mask;
+
+	valid_mask = dev_priv->short_hpd_port_mask;
 	dev_priv->short_hpd_port_mask = 0;
+
+	valid_mask |= long_mask;
+	valid_mask &= ~dev_priv->hpd_event_bits;
 	spin_unlock_irq(&dev_priv->irq_lock);
 
 	for (i = 0; i < I915_MAX_PORTS; i++) {
-		bool valid = false;
-		bool long_hpd = false;
-		intel_dig_port = dev_priv->hpd_irq_port[i];
-		if (!intel_dig_port || !intel_dig_port->hpd_pulse)
+		struct intel_digital_port *port;
+
+		port = dev_priv->hpd_irq_port[i];
+		if (!port || !port->hpd_pulse)
 			continue;
 
-		if (long_port_mask & (1 << i))  {
-			valid = true;
-			long_hpd = true;
-		} else if (short_port_mask & (1 << i))
-			valid = true;
-
-		if (valid) {
-			ret = intel_dig_port->hpd_pulse(intel_dig_port, long_hpd);
-			if (ret == true) {
-				/* if we get true fallback to old school hpd */
-				old_bits |= (1 << intel_dig_port->base.hpd_pin);
-			}
-		}
+		if (valid_mask & (1 << i) &&
+		    port->hpd_pulse(port, long_mask & (1 << i)))
+			/* unhandled, fallback to old school hpd */
+			old_bits |= 1 << port->base.hpd_pin;
 	}
 
 	if (old_bits) {
