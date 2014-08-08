@@ -5282,15 +5282,8 @@ void intel_encoder_destroy(struct drm_encoder *encoder)
  * state of the entire output pipe. */
 static void intel_encoder_dpms(struct intel_encoder *encoder, int mode)
 {
-	if (mode == DRM_MODE_DPMS_ON) {
-		encoder->connectors_active = true;
-
-		intel_crtc_update_dpms(encoder->base.crtc);
-	} else {
-		encoder->connectors_active = false;
-
-		intel_crtc_update_dpms(encoder->base.crtc);
-	}
+	encoder->connectors_active = mode == DRM_MODE_DPMS_ON;
+	intel_crtc_update_dpms(encoder->base.crtc);
 }
 
 /* Cross check the actual hw state with our own modeset state tracking (and it's
