@@ -451,35 +451,45 @@ static int i915_load_modeset_init(struct drm_device *dev)
 	 * vga_client_register() fails with -ENODEV.
 	 */
 	ret = vga_client_register(dev->pdev, dev, NULL, i915_vga_set_decode);
-	if (ret && ret != -ENODEV)
+	if (ret && ret != -ENODEV) {
+		DRM_ERROR("unable to register VGA client\n");
 		goto out;
+	}
 
 	intel_register_dsm_handler();
 
 	ret = vga_switcheroo_register_client(dev->pdev, &i915_switcheroo_ops, false);
-	if (ret)
+	if (ret) {
+		DRM_ERROR("unable to register VGA switcheroo\n");
 		goto cleanup_vga_client;
+	}
 
 	/* Initialise stolen first so that we may reserve preallocated
 	 * objects for the BIOS to KMS transition.
 	 */
 	ret = i915_gem_init_stolen(dev);
-	if (ret)
+	if (ret) {
+		DRM_ERROR("unable to initialise stolen memory\n");
 		goto cleanup_vga_switcheroo;
+	}
 
 	intel_power_domains_init_hw(dev_priv);
 
 	ret = intel_irq_install(dev_priv);
-	if (ret)
+	if (ret) {
+		DRM_ERROR("unable to install IRQ\n");
 		goto cleanup_gem_stolen;
+	}
 
 	/* Important: The output setup functions called by modeset_init need
 	 * working irqs for e.g. gmbus and dp aux transfers. */
 	intel_modeset_init(dev);
 
 	ret = i915_gem_init(dev);
-	if (ret)
+	if (ret) {
+		DRM_ERROR("unable to initialise GEM\n");
 		goto cleanup_irq;
+	}
 
 	intel_modeset_gem_init(dev);
 
@@ -490,8 +500,10 @@ static int i915_load_modeset_init(struct drm_device *dev)
 		return 0;
 
 	ret = intel_fbdev_init(dev);
-	if (ret)
+	if (ret) {
+		DRM_ERROR("unable to initialise fbdev\n");
 		goto cleanup_gem;
+	}
 
 	/* Only enable hotplug handling once the fbdev is fully set up. */
 	intel_hpd_init(dev_priv);
@@ -517,6 +529,7 @@ cleanup_gem:
 	i915_gem_fini(dev);
 	mutex_unlock(&dev->struct_mutex);
 cleanup_irq:
+	intel_modeset_cleanup(dev);
 	drm_irq_uninstall(dev);
 cleanup_gem_stolen:
 	i915_gem_cleanup_stolen(dev);
