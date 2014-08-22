@@ -713,7 +713,7 @@ hsw_unclaimed_reg_detect(struct drm_i915_private *dev_priv)
 		return;
 
 	if (__raw_i915_read32(dev_priv, FPGA_DBG) & FPGA_DBG_RM_NOCLAIM) {
-		DRM_ERROR("Unclaimed register detected. Please use the i915.mmio_debug=1 to debug this problem.");
+		DRM_ERROR_ONCE("Unclaimed register detected. Please use the i915.mmio_debug=1 to debug this problem.");
 		__raw_i915_write32(dev_priv, FPGA_DBG, FPGA_DBG_RM_NOCLAIM);
 	}
 }

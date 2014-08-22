@@ -157,6 +157,9 @@ void drm_err(const char *format, ...);
 #define DRM_ERROR(fmt, ...)				\
 	drm_err(fmt, ##__VA_ARGS__)
 
+#define DRM_ERROR_ONCE(fmt, ...)				\
+	printk_once(KERN_ERR "[" DRM_NAME "] " fmt, ##__VA_ARGS__)
+
 /**
  * Rate limited error output.  Like DRM_ERROR() but won't flood the log.
  *
