@@ -2886,7 +2886,7 @@ static void i915_hangcheck_elapsed(unsigned long data)
 #define KICK 5
 #define HUNG 20
 
-	if (!i915.enable_hangcheck)
+	if (!i915_module.enable_hangcheck)
 		return;
 
 	for_each_engine(engine, dev_priv, i) {
@@ -2995,11 +2995,10 @@ static void i915_hangcheck_elapsed(unsigned long data)
 
 void i915_queue_hangcheck(struct drm_device *dev)
 {
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	if (!i915.enable_hangcheck)
+	if (!i915_module.enable_hangcheck)
 		return;
 
-	mod_timer(&dev_priv->gpu_error.hangcheck_timer,
+	mod_timer(&to_i915(dev)->gpu_error.hangcheck_timer,
 		  round_jiffies_up(jiffies + DRM_I915_HANGCHECK_JIFFIES));
 }
 

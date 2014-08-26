@@ -2197,8 +2197,8 @@ struct drm_i915_cmd_table {
 
 #define HAS_HW_CONTEXTS(dev)	(INTEL_INFO(dev)->gen >= 5)
 #define HAS_LOGICAL_RING_CONTEXTS(dev)	(INTEL_INFO(dev)->gen >= 8)
-#define USES_PPGTT(dev)		(i915.enable_ppgtt)
-#define USES_FULL_PPGTT(dev)	(i915.enable_ppgtt == 2)
+#define USES_PPGTT(dev)		(i915_module.enable_ppgtt)
+#define USES_FULL_PPGTT(dev)	(i915_module.enable_ppgtt == 2)
 
 #define HAS_OVERLAY(dev)		(INTEL_INFO(dev)->has_overlay)
 #define OVERLAY_NEEDS_PHYSICAL(dev)	(INTEL_INFO(dev)->overlay_needs_physical)
@@ -2275,7 +2275,7 @@ extern int i915_master_create(struct drm_device *dev, struct drm_master *master)
 extern void i915_master_destroy(struct drm_device *dev, struct drm_master *master);
 
 /* i915_params.c */
-struct i915_params {
+extern struct i915_module_parameters {
 	int modeset;
 	int panel_ignore_lid;
 	unsigned int powersave;
@@ -2303,8 +2303,7 @@ struct i915_params {
 	bool disable_vtd_wa;
 	int use_mmio_flip;
 	bool mmio_debug;
-};
-extern struct i915_params i915 __read_mostly;
+} i915_module __read_mostly;
 
 /* i915_dma.c */
 extern int i915_driver_load(struct drm_device *, unsigned long flags);

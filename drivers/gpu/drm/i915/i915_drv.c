@@ -784,7 +784,7 @@ int i915_reset(struct drm_device *dev)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	int ret;
 
-	if (!i915.reset)
+	if (!i915_module.reset)
 		return 0;
 
 	mutex_lock(&dev->struct_mutex);
@@ -869,7 +869,8 @@ static int i915_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct intel_device_info *intel_info =
 		(struct intel_device_info *) ent->driver_data;
 
-	if (IS_PRELIMINARY_HW(intel_info) && !i915.preliminary_hw_support) {
+	if (IS_PRELIMINARY_HW(intel_info) &&
+	    !i915_module.preliminary_hw_support) {
 		DRM_INFO("This hardware requires preliminary hardware support.\n"
 			 "See CONFIG_DRM_I915_PRELIMINARY_HW_SUPPORT, and/or modparam preliminary_hw_support\n");
 		return -ENODEV;
@@ -1595,14 +1596,14 @@ static int __init i915_init(void)
 	 * the default behavior.
 	 */
 #if defined(CONFIG_DRM_I915_KMS)
-	if (i915.modeset != 0)
+	if (i915_module.modeset != 0)
 		driver.driver_features |= DRIVER_MODESET;
 #endif
-	if (i915.modeset == 1)
+	if (i915_module.modeset == 1)
 		driver.driver_features |= DRIVER_MODESET;
 
 #ifdef CONFIG_VGA_CONSOLE
-	if (vgacon_text_force() && i915.modeset == -1)
+	if (vgacon_text_force() && i915_module.modeset == -1)
 		driver.driver_features &= ~DRIVER_MODESET;
 #endif
 

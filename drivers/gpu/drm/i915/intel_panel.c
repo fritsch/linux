@@ -382,13 +382,13 @@ intel_panel_detect(struct drm_device *dev)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	/* Assume that the BIOS does not lie through the OpRegion... */
-	if (!i915.panel_ignore_lid && dev_priv->opregion.lid_state) {
+	if (!i915_module.panel_ignore_lid && dev_priv->opregion.lid_state) {
 		return ioread32(dev_priv->opregion.lid_state) & 0x1 ?
 			connector_status_connected :
 			connector_status_disconnected;
 	}
 
-	switch (i915.panel_ignore_lid) {
+	switch (i915_module.panel_ignore_lid) {
 	case -2:
 		return connector_status_connected;
 	case -1:
@@ -469,10 +469,10 @@ static u32 intel_panel_compute_brightness(struct intel_connector *connector,
 
 	WARN_ON(panel->backlight.max == 0);
 
-	if (i915.invert_brightness < 0)
+	if (i915_module.invert_brightness < 0)
 		return val;
 
-	if (i915.invert_brightness > 0 ||
+	if (i915_module.invert_brightness > 0 ||
 	    dev_priv->quirks & QUIRK_INVERT_BRIGHTNESS) {
 		return panel->backlight.max - val;
 	}

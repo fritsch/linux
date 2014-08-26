@@ -855,7 +855,7 @@ bool i915_needs_cmd_parser(struct intel_engine_cs *engine)
 	if (USES_PPGTT(engine->dev))
 		return false;
 
-	return (i915.enable_cmd_parser == 1);
+	return (i915_module.enable_cmd_parser == 1);
 }
 
 static bool check_cmd(const struct intel_engine_cs *engine,

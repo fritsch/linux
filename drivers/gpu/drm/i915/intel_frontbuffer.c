@@ -110,7 +110,7 @@ static void intel_mark_fb_busy(struct drm_device *dev,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	enum pipe pipe;
 
-	if (!i915.powersave)
+	if (!i915_module.powersave)
 		return;
 
 	for_each_pipe(dev_priv, pipe) {

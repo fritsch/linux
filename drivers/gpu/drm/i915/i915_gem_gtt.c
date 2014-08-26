@@ -2122,8 +2122,9 @@ int i915_gem_gtt_init(struct drm_device *dev)
 	 * do this now so that we can print out any log messages once rather
 	 * than every time we check intel_enable_ppgtt().
 	 */
-	i915.enable_ppgtt = sanitize_enable_ppgtt(dev, i915.enable_ppgtt);
-	DRM_DEBUG_DRIVER("ppgtt mode: %i\n", i915.enable_ppgtt);
+	i915_module.enable_ppgtt =
+	       	sanitize_enable_ppgtt(dev, i915_module.enable_ppgtt);
+	DRM_DEBUG_DRIVER("ppgtt mode: %i\n", i915_module.enable_ppgtt);
 
 	return 0;
 }

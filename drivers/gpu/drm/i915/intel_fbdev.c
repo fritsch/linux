@@ -516,7 +516,7 @@ static bool intel_fbdev_init_bios(struct drm_device *dev,
 	struct intel_plane_config *plane_config = NULL;
 	unsigned int max_size = 0;
 
-	if (!i915.fastboot)
+	if (!i915_module.fastboot)
 		return false;
 
 	/* Find the largest fb */

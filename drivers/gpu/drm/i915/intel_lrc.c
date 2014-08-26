@@ -735,7 +735,7 @@ static bool enable_execlists(struct drm_i915_private *dev_priv)
 	    !USES_PPGTT(dev_priv))
 		return false;
 
-	return i915.enable_execlists;
+	return i915_module.enable_execlists;
 }
 
 static const int gen8_irq_shift[] = {

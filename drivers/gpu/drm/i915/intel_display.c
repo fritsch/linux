@@ -2860,7 +2860,7 @@ static void intel_update_pipe_size(struct intel_crtc *crtc)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	const struct drm_display_mode *adjusted_mode;
 
-	if (!i915.fastboot)
+	if (!i915_module.fastboot)
 		return;
 
 	/*
@@ -5467,7 +5467,7 @@ retry:
 static void hsw_compute_ips_config(struct intel_crtc *crtc,
 				   struct intel_crtc_config *pipe_config)
 {
-	pipe_config->ips_enabled = i915.enable_ips &&
+	pipe_config->ips_enabled = i915_module.enable_ips &&
 				   hsw_crtc_supports_ips(crtc) &&
 				   pipe_config->pipe_bpp <= 24;
 }
@@ -5684,8 +5684,8 @@ intel_link_compute_m_n(int bits_per_pixel, int nlanes,
 
 static inline bool intel_panel_use_ssc(struct drm_i915_private *dev_priv)
 {
-	if (i915.panel_use_ssc >= 0)
-		return i915.panel_use_ssc != 0;
+	if (i915_module.panel_use_ssc >= 0)
+		return i915_module.panel_use_ssc != 0;
 	return dev_priv->vbt.lvds_use_ssc
 		&& !(dev_priv->quirks & QUIRK_LVDS_SSC_DISABLE);
 }
@@ -5741,7 +5741,7 @@ static void i9xx_update_pll_dividers(struct intel_crtc *crtc,
 
 	crtc->lowfreq_avail = false;
 	if (intel_pipe_will_have_type(crtc, INTEL_OUTPUT_LVDS) &&
-	    reduced_clock && i915.powersave) {
+	    reduced_clock && i915_module.powersave) {
 		crtc->new_config->dpll_hw_state.fp1 = fp2;
 		crtc->lowfreq_avail = true;
 	} else {
@@ -7460,7 +7460,7 @@ static int ironlake_crtc_compute_clock(struct intel_crtc *crtc)
 		}
 	}
 
-	if (is_lvds && has_reduced_clock && i915.powersave)
+	if (is_lvds && has_reduced_clock && i915_module.powersave)
 		crtc->lowfreq_avail = true;
 	else
 		crtc->lowfreq_avail = false;
@@ -8991,7 +8991,7 @@ void intel_mark_idle(struct drm_device *dev)
 
 	dev_priv->mm.busy = false;
 
-	if (!i915.powersave)
+	if (!i915_module.powersave)
 		goto out;
 
 	for_each_crtc(dev, crtc) {
@@ -9478,9 +9478,9 @@ static bool use_mmio_flip(struct intel_crtc *intel_crtc,
 	if (flags & DRM_MODE_PAGE_FLIP_ASYNC)
 		return false; /* XXX undecided */
 
-	if (i915.use_mmio_flip < 0)
+	if (i915_module.use_mmio_flip < 0)
 		return false;
-	else if (i915.use_mmio_flip > 0)
+	else if (i915_module.use_mmio_flip > 0)
 		return true;
 	else
 		return engine != i915_request_engine(obj->last_write.request);
@@ -11547,7 +11547,7 @@ static int intel_crtc_set_config(struct drm_mode_set *set)
 		 * flipping, so increasing its cost here shouldn't be a big
 		 * deal).
 		 */
-		if (i915.fastboot && ret == 0)
+		if (i915_module.fastboot && ret == 0)
 			intel_modeset_check_state(set->crtc->dev);
 	}
 
@@ -13466,7 +13466,7 @@ void intel_modeset_setup_hw_state(struct drm_device *dev,
 	 * checking everywhere.
 	 */
 	for_each_intel_crtc(dev, crtc) {
-		if (crtc->active && i915.fastboot) {
+		if (crtc->active && i915_module.fastboot) {
 			intel_mode_from_pipe_config(&crtc->base.mode, &crtc->config);
 			DRM_DEBUG_KMS("[CRTC:%d] found active mode: ",
 				      crtc->base.base.id);

@@ -538,7 +538,7 @@ void intel_update_fbc(struct drm_device *dev)
 		return;
 	}
 
-	if (!i915.powersave) {
+	if (!i915_module.powersave) {
 		if (set_no_fbc_reason(dev_priv, FBC_MODULE_PARAM))
 			DRM_DEBUG_KMS("fbc disabled per module param\n");
 		return;
@@ -576,12 +576,12 @@ void intel_update_fbc(struct drm_device *dev)
 	obj = intel_fb_obj(fb);
 	adjusted_mode = &intel_crtc->config.adjusted_mode;
 
-	if (i915.enable_fbc < 0) {
+	if (i915_module.enable_fbc < 0) {
 		if (set_no_fbc_reason(dev_priv, FBC_CHIP_DEFAULT))
 			DRM_DEBUG_KMS("disabled per chip default\n");
 		goto out_disable;
 	}
-	if (!i915.enable_fbc) {
+	if (!i915_module.enable_fbc) {
 		if (set_no_fbc_reason(dev_priv, FBC_MODULE_PARAM))
 			DRM_DEBUG_KMS("fbc disabled per module param\n");
 		goto out_disable;
@@ -4653,7 +4653,7 @@ static int sanitize_rc6_option(const struct drm_device *dev, int enable_rc6)
 
 int intel_enable_rc6(const struct drm_device *dev)
 {
-	return i915.enable_rc6;
+	return i915_module.enable_rc6;
 }
 
 static void parse_rp_state_cap(struct drm_i915_private *dev_priv, u32 rp_state_cap)
@@ -6144,7 +6144,7 @@ static void intel_init_emon(struct drm_device *dev)
 
 void intel_init_gt_powersave(struct drm_device *dev)
 {
-	i915.enable_rc6 = sanitize_rc6_option(dev, i915.enable_rc6);
+	i915_module.enable_rc6 = sanitize_rc6_option(dev, i915_module.enable_rc6);
 
 	if (IS_CHERRYVIEW(dev))
 		cherryview_init_gt_powersave(dev);

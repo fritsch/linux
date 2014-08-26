@@ -1795,8 +1795,8 @@ static bool semaphores_enabled(struct drm_i915_private *dev_priv)
 	if (INTEL_INFO(dev_priv)->gen < 6)
 		return false;
 
-	if (i915.semaphores >= 0)
-		return i915.semaphores;
+	if (i915_module.semaphores >= 0)
+		return i915_module.semaphores;
 
 	/* Until we get further testing... */
 	if (IS_GEN8(dev_priv))
@@ -1841,14 +1841,14 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 			obj = i915_gem_alloc_object(dev_priv->dev, 4096);
 			if (obj == NULL) {
 				DRM_ERROR("Failed to allocate semaphore bo. Disabling semaphores\n");
-				i915.semaphores = 0;
+				i915_module.semaphores = 0;
 			} else {
 				i915_gem_object_set_cache_level(obj, I915_CACHE_LLC);
 				ret = i915_gem_obj_ggtt_pin(obj, 0, PIN_NONBLOCK);
 				if (ret != 0) {
 					drm_gem_object_unreference(&obj->base);
 					DRM_ERROR("Failed to pin semaphore bo. Disabling semaphores\n");
-					i915.semaphores = 0;
+					i915_module.semaphores = 0;
 				} else
 					dev_priv->semaphore_obj = obj;
 			}

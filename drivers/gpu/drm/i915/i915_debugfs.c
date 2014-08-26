@@ -1592,7 +1592,7 @@ static int i915_ips_status(struct seq_file *m, void *unused)
 	intel_runtime_pm_get(dev_priv);
 
 	seq_printf(m, "Enabled by kernel parameter: %s\n",
-		   yesno(i915.enable_ips));
+		   yesno(i915_module.enable_ips));
 
 	if (INTEL_INFO(dev)->gen >= 8) {
 		seq_puts(m, "Currently: unknown\n");

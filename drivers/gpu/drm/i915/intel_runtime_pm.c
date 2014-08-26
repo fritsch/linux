@@ -620,7 +620,7 @@ static void check_power_well_state(struct drm_i915_private *dev_priv,
 {
 	bool enabled = power_well->ops->is_enabled(dev_priv, power_well);
 
-	if (power_well->always_on || !i915.disable_power_well) {
+	if (power_well->always_on || !i915_module.disable_power_well) {
 		if (!enabled)
 			goto mismatch;
 
@@ -635,7 +635,7 @@ static void check_power_well_state(struct drm_i915_private *dev_priv,
 mismatch:
 	WARN(1, "state mismatch for '%s' (always_on %d hw state %d use-count %d disable_power_well %d\n",
 		  power_well->name, power_well->always_on, enabled,
-		  power_well->count, i915.disable_power_well);
+		  power_well->count, i915_module.disable_power_well);
 }
 
 /**
@@ -704,7 +704,7 @@ void intel_display_power_put(struct drm_i915_private *dev_priv,
 	for_each_power_well_rev(i, power_well, BIT(domain), power_domains) {
 		WARN_ON(!power_well->count);
 
-		if (!--power_well->count && i915.disable_power_well) {
+		if (!--power_well->count && i915_module.disable_power_well) {
 			DRM_DEBUG_KMS("disabling %s\n", power_well->name);
 			power_well->hw_enabled = false;
 			power_well->ops->disable(dev_priv, power_well);

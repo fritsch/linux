@@ -948,7 +948,7 @@ validate_exec_list(struct drm_i915_private *dev_priv,
 		if (!access_ok(VERIFY_WRITE, ptr, length))
 			return -EFAULT;
 
-		if (likely(!i915.prefault_disable)) {
+		if (likely(!i915_module.prefault_disable)) {
 			if (fault_in_multipages_readable(ptr, length))
 				return -EFAULT;
 		}
