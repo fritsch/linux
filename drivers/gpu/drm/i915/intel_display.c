@@ -2843,8 +2843,7 @@ static bool intel_crtc_has_pending_flip(struct drm_crtc *crtc)
 	struct intel_crtc *intel_crtc = to_intel_crtc(crtc);
 	bool pending;
 
-	if (i915_reset_in_progress(&dev_priv->gpu_error) ||
-	    intel_crtc->reset_counter != atomic_read(&dev_priv->gpu_error.reset_counter))
+	if (intel_crtc->reset_counter != atomic_read(&dev_priv->gpu_error.reset_counter))
 		return false;
 
 	spin_lock_irq(&dev->event_lock);
@@ -9692,9 +9691,6 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 			return -EINVAL;
 	}
 
-	if (i915_terminally_wedged(&dev_priv->gpu_error))
-		goto out_hang;
-
 	work = kzalloc(sizeof(*work), GFP_KERNEL);
 	if (work == NULL)
 		return -ENOMEM;
@@ -9752,6 +9748,11 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 
 	atomic_inc(&intel_crtc->unpin_work_count);
 	intel_crtc->reset_counter = atomic_read(&dev_priv->gpu_error.reset_counter);
+	if (__i915_reset_in_progress(intel_crtc->reset_counter) |
+	    __i915_terminally_wedged(intel_crtc->reset_counter)) {
+		ret = -EIO;
+		goto cleanup_pending;
+	}
 
 	if (INTEL_INFO(dev)->gen >= 5 || IS_G4X(dev))
 		work->flip_count = I915_READ(PIPE_FLIPCOUNT_GM45(pipe)) + 1;
@@ -9849,7 +9850,6 @@ free_work:
 	kfree(work);
 
 	if (ret == -EIO) {
-out_hang:
 		intel_crtc_wait_for_pending_flips(crtc);
 		ret = intel_pipe_set_base(crtc, crtc->x, crtc->y, fb);
 		if (ret == 0 && event) {
