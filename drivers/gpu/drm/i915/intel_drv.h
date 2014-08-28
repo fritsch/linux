@@ -405,12 +405,6 @@ struct intel_pipe_wm {
 	bool sprites_scaled;
 };
 
-struct intel_mmio_flip {
-	u32 seqno;
-	struct intel_engine_cs *ring;
-	struct work_struct work;
-};
-
 struct skl_pipe_wm {
 	struct skl_wm_level wm[8];
 	struct skl_wm_level trans_wm;
@@ -469,7 +463,7 @@ struct intel_crtc {
 	} wm;
 
 	int scanline_offset;
-	struct intel_mmio_flip mmio_flip;
+	struct i915_gem_request *mmio_flip;
 };
 
 struct intel_plane_wm_parameters {
@@ -708,8 +702,7 @@ struct intel_unpin_work {
 #define INTEL_FLIP_COMPLETE	2
 	u32 flip_count;
 	u32 gtt_offset;
-	struct intel_engine_cs *flip_queued_ring;
-	u32 flip_queued_seqno;
+	struct i915_gem_request *flip_queued_request;
 	int flip_queued_vblank;
 	int flip_ready_vblank;
 	bool enable_stall_check;
@@ -839,7 +832,7 @@ void intel_ddi_set_vc_payload_alloc(struct drm_crtc *crtc, bool state);
 
 /* intel_frontbuffer.c */
 void intel_fb_obj_invalidate(struct drm_i915_gem_object *obj,
-			     struct intel_engine_cs *ring);
+			     struct i915_gem_request *rq);
 void intel_frontbuffer_flip_prepare(struct drm_device *dev,
 				    unsigned frontbuffer_bits);
 void intel_frontbuffer_flip_complete(struct drm_device *dev,
@@ -914,7 +907,7 @@ void intel_release_load_detect_pipe(struct drm_connector *connector,
 				    struct intel_load_detect_pipe *old);
 int intel_pin_and_fence_fb_obj(struct drm_plane *plane,
 			       struct drm_framebuffer *fb,
-			       struct intel_engine_cs *pipelined);
+			       struct i915_gem_request *pipelined);
 void intel_unpin_fb_obj(struct drm_i915_gem_object *obj);
 struct drm_framebuffer *
 __intel_framebuffer_create(struct drm_device *dev,

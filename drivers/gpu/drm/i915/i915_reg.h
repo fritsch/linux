@@ -305,7 +305,7 @@
 #define MI_STORE_REGISTER_MEM(x) MI_INSTR(0x24, 2*(x)-1)
 #define MI_STORE_REGISTER_MEM_GEN8(x) MI_INSTR(0x24, 3*(x)-1)
 #define   MI_SRM_LRM_GLOBAL_GTT		(1<<22)
-#define MI_FLUSH_DW		MI_INSTR(0x26, 1) /* for GEN6 */
+#define MI_FLUSH_DW		MI_INSTR(0x26, 0) /* for GEN6 */
 #define   MI_FLUSH_DW_STORE_INDEX	(1<<21)
 #define   MI_INVALIDATE_TLB		(1<<18)
 #define   MI_FLUSH_DW_OP_STOREDW	(1<<14)
@@ -2350,6 +2350,7 @@ enum punit_power_well {
  *   doesn't need saving on GT1
  */
 #define CXT_SIZE		0x21a0
+#define ILK_CXT_TOTAL_SIZE		(1 * PAGE_SIZE)
 #define GEN6_CXT_POWER_SIZE(cxt_reg)	((cxt_reg >> 24) & 0x3f)
 #define GEN6_CXT_RING_SIZE(cxt_reg)	((cxt_reg >> 18) & 0x3f)
 #define GEN6_CXT_RENDER_SIZE(cxt_reg)	((cxt_reg >> 12) & 0x3f)

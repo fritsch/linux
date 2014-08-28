@@ -495,30 +495,6 @@ void intel_detect_pch(struct drm_device *dev)
 	pci_dev_put(pch);
 }
 
-bool i915_semaphore_is_enabled(struct drm_device *dev)
-{
-	if (INTEL_INFO(dev)->gen < 6)
-		return false;
-
-	if (i915.semaphores >= 0)
-		return i915.semaphores;
-
-	/* TODO: make semaphores and Execlists play nicely together */
-	if (i915.enable_execlists)
-		return false;
-
-	/* Until we get further testing... */
-	if (IS_GEN8(dev))
-		return false;
-
-#ifdef CONFIG_INTEL_IOMMU
-	/* Enable semaphores on SNB when IO remapping is off */
-	if (INTEL_INFO(dev)->gen == 6 && intel_iommu_gfx_mapped)
-		return false;
-#endif
-
-	return true;
-}
 
 void intel_hpd_cancel_work(struct drm_i915_private *dev_priv)
 {
@@ -806,7 +782,6 @@ int i915_resume_legacy(struct drm_device *dev)
 int i915_reset(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	bool simulated;
 	int ret;
 
 	if (!i915.reset)
@@ -814,14 +789,16 @@ int i915_reset(struct drm_device *dev)
 
 	mutex_lock(&dev->struct_mutex);
 
-	i915_gem_reset(dev);
-
-	simulated = dev_priv->gpu_error.stop_rings != 0;
-
 	ret = intel_gpu_reset(dev);
 
+	/* Clear the reset counter. Before anyone else
+	 * can grab the mutex, we will declare whether or
+	 * not the GPU is wedged.
+	 */
+	atomic_inc(&dev_priv->gpu_error.reset_counter);
+
 	/* Also reset the gpu hangman. */
-	if (simulated) {
+	if (dev_priv->gpu_error.stop_rings) {
 		DRM_INFO("Simulated gpu hang, resetting stop_rings\n");
 		dev_priv->gpu_error.stop_rings = 0;
 		if (ret == -ENODEV) {
@@ -833,6 +810,8 @@ int i915_reset(struct drm_device *dev)
 
 	if (i915_stop_ring_allow_warn(dev_priv))
 		pr_notice("drm/i915: Resetting chip after gpu hang\n");
+
+	i915_gem_reset(dev);
 
 	if (ret) {
 		DRM_ERROR("Failed to reset chip: %i\n", ret);
@@ -857,14 +836,7 @@ int i915_reset(struct drm_device *dev)
 	if (drm_core_check_feature(dev, DRIVER_MODESET) ||
 			!dev_priv->ums.mm_suspended) {
 		dev_priv->ums.mm_suspended = 0;
-
-		/* Used to prevent gem_check_wedged returning -EAGAIN during gpu reset */
-		dev_priv->gpu_error.reload_in_reset = true;
-
 		ret = i915_gem_init_hw(dev);
-
-		dev_priv->gpu_error.reload_in_reset = false;
-
 		mutex_unlock(&dev->struct_mutex);
 		if (ret) {
 			DRM_ERROR("Failed hw init on reset %d\n", ret);

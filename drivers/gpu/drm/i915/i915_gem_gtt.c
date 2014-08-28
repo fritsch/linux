@@ -213,30 +213,28 @@ static gen6_gtt_pte_t iris_pte_encode(dma_addr_t addr,
 }
 
 /* Broadwell Page Directory Pointer Descriptors */
-static int gen8_write_pdp(struct intel_engine_cs *ring, unsigned entry,
-			   uint64_t val)
+static int gen8_write_pdp(struct i915_gem_request *rq, unsigned entry, uint64_t val)
 {
-	int ret;
+	struct intel_ringbuffer *ring;
 
 	BUG_ON(entry >= 4);
 
-	ret = intel_ring_begin(ring, 6);
-	if (ret)
-		return ret;
+	ring = intel_ring_begin(rq, 5);
+	if (IS_ERR(ring))
+		return PTR_ERR(ring);
 
-	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(1));
-	intel_ring_emit(ring, GEN8_RING_PDP_UDW(ring, entry));
+	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(2));
+	intel_ring_emit(ring, GEN8_RING_PDP_UDW(rq->engine, entry));
 	intel_ring_emit(ring, (u32)(val >> 32));
-	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(1));
-	intel_ring_emit(ring, GEN8_RING_PDP_LDW(ring, entry));
+	intel_ring_emit(ring, GEN8_RING_PDP_LDW(rq->engine, entry));
 	intel_ring_emit(ring, (u32)(val));
 	intel_ring_advance(ring);
 
 	return 0;
 }
 
-static int gen8_mm_switch(struct i915_hw_ppgtt *ppgtt,
-			  struct intel_engine_cs *ring)
+static int gen8_mm_switch(struct i915_gem_request *rq,
+			  struct i915_hw_ppgtt *ppgtt)
 {
 	int i, ret;
 
@@ -245,7 +243,7 @@ static int gen8_mm_switch(struct i915_hw_ppgtt *ppgtt,
 
 	for (i = used_pd - 1; i >= 0; i--) {
 		dma_addr_t addr = ppgtt->pd_dma_addr[i];
-		ret = gen8_write_pdp(ring, i, addr);
+		ret = gen8_write_pdp(rq, i, addr);
 		if (ret)
 			return ret;
 	}
@@ -709,94 +707,53 @@ static uint32_t get_pd_offset(struct i915_hw_ppgtt *ppgtt)
 	return (ppgtt->pd_offset / 64) << 16;
 }
 
-static int hsw_mm_switch(struct i915_hw_ppgtt *ppgtt,
-			 struct intel_engine_cs *ring)
+static int gen7_mm_switch(struct i915_gem_request *rq,
+			  struct i915_hw_ppgtt *ppgtt)
 {
+	struct intel_ringbuffer *ring;
 	int ret;
 
-	/* NB: TLBs must be flushed and invalidated before a switch */
-	ret = ring->flush(ring, I915_GEM_GPU_DOMAINS, I915_GEM_GPU_DOMAINS);
+	ret = i915_request_emit_flush(rq, I915_COMMAND_BARRIER);
 	if (ret)
 		return ret;
 
-	ret = intel_ring_begin(ring, 6);
-	if (ret)
-		return ret;
+	ring = intel_ring_begin(rq, 5);
+	if (IS_ERR(ring))
+		return PTR_ERR(ring);
 
 	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(2));
-	intel_ring_emit(ring, RING_PP_DIR_DCLV(ring));
+	intel_ring_emit(ring, RING_PP_DIR_DCLV(rq->engine));
 	intel_ring_emit(ring, PP_DIR_DCLV_2G);
-	intel_ring_emit(ring, RING_PP_DIR_BASE(ring));
+	intel_ring_emit(ring, RING_PP_DIR_BASE(rq->engine));
 	intel_ring_emit(ring, get_pd_offset(ppgtt));
-	intel_ring_emit(ring, MI_NOOP);
 	intel_ring_advance(ring);
+
+	rq->pending_flush |= I915_INVALIDATE_CACHES;
 
 	return 0;
 }
 
-static int gen7_mm_switch(struct i915_hw_ppgtt *ppgtt,
-			  struct intel_engine_cs *ring)
+static int gen6_mm_switch(struct i915_gem_request *rq,
+			  struct i915_hw_ppgtt *ppgtt)
 {
-	int ret;
-
-	/* NB: TLBs must be flushed and invalidated before a switch */
-	ret = ring->flush(ring, I915_GEM_GPU_DOMAINS, I915_GEM_GPU_DOMAINS);
-	if (ret)
-		return ret;
-
-	ret = intel_ring_begin(ring, 6);
-	if (ret)
-		return ret;
-
-	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(2));
-	intel_ring_emit(ring, RING_PP_DIR_DCLV(ring));
-	intel_ring_emit(ring, PP_DIR_DCLV_2G);
-	intel_ring_emit(ring, RING_PP_DIR_BASE(ring));
-	intel_ring_emit(ring, get_pd_offset(ppgtt));
-	intel_ring_emit(ring, MI_NOOP);
-	intel_ring_advance(ring);
-
-	/* XXX: RCS is the only one to auto invalidate the TLBs? */
-	if (ring->id != RCS) {
-		ret = ring->flush(ring, I915_GEM_GPU_DOMAINS, I915_GEM_GPU_DOMAINS);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-static int gen6_mm_switch(struct i915_hw_ppgtt *ppgtt,
-			  struct intel_engine_cs *ring)
-{
-	struct drm_device *dev = ppgtt->base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-
-
-	I915_WRITE(RING_PP_DIR_DCLV(ring), PP_DIR_DCLV_2G);
-	I915_WRITE(RING_PP_DIR_BASE(ring), get_pd_offset(ppgtt));
-
-	POSTING_READ(RING_PP_DIR_DCLV(ring));
-
-	return 0;
+	return -ENODEV;
 }
 
 static void gen8_ppgtt_enable(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_engine_cs *ring;
+	struct intel_engine_cs *engine;
 	int j;
 
-	for_each_ring(ring, dev_priv, j) {
-		I915_WRITE(RING_MODE_GEN7(ring),
+	for_each_engine(engine, dev_priv, j)
+		I915_WRITE(RING_MODE_GEN7(engine),
 			   _MASKED_BIT_ENABLE(GFX_PPGTT_ENABLE));
-	}
 }
 
 static void gen7_ppgtt_enable(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_engine_cs *ring;
+	struct intel_engine_cs *engine;
 	uint32_t ecochk, ecobits;
 	int i;
 
@@ -812,17 +769,26 @@ static void gen7_ppgtt_enable(struct drm_device *dev)
 	}
 	I915_WRITE(GAM_ECOCHK, ecochk);
 
-	for_each_ring(ring, dev_priv, i) {
+	for_each_engine(engine, dev_priv, i) {
 		/* GFX_MODE is per-ring on gen7+ */
-		I915_WRITE(RING_MODE_GEN7(ring),
+		I915_WRITE(RING_MODE_GEN7(engine),
 			   _MASKED_BIT_ENABLE(GFX_PPGTT_ENABLE));
+
+		if (dev_priv->mm.aliasing_ppgtt) {
+			I915_WRITE(RING_PP_DIR_DCLV(engine), PP_DIR_DCLV_2G);
+			I915_WRITE(RING_PP_DIR_BASE(engine), get_pd_offset(dev_priv->mm.aliasing_ppgtt));
+		}
+
 	}
+	POSTING_READ(RING_PP_DIR_DCLV(RCS_ENGINE(dev_priv)));
 }
 
 static void gen6_ppgtt_enable(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	uint32_t ecochk, gab_ctl, ecobits;
+	struct intel_engine_cs *engine;
+	int i;
 
 	ecobits = I915_READ(GAC_ECO_BITS);
 	I915_WRITE(GAC_ECO_BITS, ecobits | ECOBITS_SNB_BIT |
@@ -835,6 +801,15 @@ static void gen6_ppgtt_enable(struct drm_device *dev)
 	I915_WRITE(GAM_ECOCHK, ecochk | ECOCHK_SNB_BIT | ECOCHK_PPGTT_CACHE64B);
 
 	I915_WRITE(GFX_MODE, _MASKED_BIT_ENABLE(GFX_PPGTT_ENABLE));
+
+	for_each_engine(engine, dev_priv, i) {
+		if (dev_priv->mm.aliasing_ppgtt) {
+			I915_WRITE(RING_PP_DIR_DCLV(engine), PP_DIR_DCLV_2G);
+			I915_WRITE(RING_PP_DIR_BASE(engine), get_pd_offset(dev_priv->mm.aliasing_ppgtt));
+		}
+
+	}
+	POSTING_READ(RING_PP_DIR_DCLV(RCS_ENGINE(dev_priv)));
 }
 
 /* PPGTT support for Sandybdrige/Gen6 and later */
@@ -1053,8 +1028,6 @@ static int gen6_ppgtt_init(struct i915_hw_ppgtt *ppgtt)
 	ppgtt->base.pte_encode = dev_priv->gtt.base.pte_encode;
 	if (IS_GEN6(dev)) {
 		ppgtt->switch_mm = gen6_mm_switch;
-	} else if (IS_HASWELL(dev)) {
-		ppgtt->switch_mm = hsw_mm_switch;
 	} else if (IS_GEN7(dev)) {
 		ppgtt->switch_mm = gen7_mm_switch;
 	} else
@@ -1114,7 +1087,6 @@ int i915_ppgtt_init(struct drm_device *dev, struct i915_hw_ppgtt *ppgtt)
 
 	ret = __hw_ppgtt_init(dev, ppgtt);
 	if (ret == 0) {
-		kref_init(&ppgtt->ref);
 		drm_mm_init(&ppgtt->base.mm, ppgtt->base.start,
 			    ppgtt->base.total);
 		i915_init_vm(dev_priv, &ppgtt->base);
@@ -1125,18 +1097,13 @@ int i915_ppgtt_init(struct drm_device *dev, struct i915_hw_ppgtt *ppgtt)
 
 int i915_ppgtt_init_hw(struct drm_device *dev)
 {
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_engine_cs *ring;
-	struct i915_hw_ppgtt *ppgtt = dev_priv->mm.aliasing_ppgtt;
-	int i, ret = 0;
+	if (!USES_PPGTT(dev))
+		return 0;
 
 	/* In the case of execlists, PPGTT is enabled by the context descriptor
 	 * and the PDPs are contained within the context itself.  We don't
 	 * need to do anything here. */
-	if (i915.enable_execlists)
-		return 0;
-
-	if (!USES_PPGTT(dev))
+	if (RCS_ENGINE(dev)->execlists_enabled)
 		return 0;
 
 	if (IS_GEN6(dev))
@@ -1148,15 +1115,7 @@ int i915_ppgtt_init_hw(struct drm_device *dev)
 	else
 		WARN_ON(1);
 
-	if (ppgtt) {
-		for_each_ring(ring, dev_priv, i) {
-			ret = ppgtt->switch_mm(ppgtt, ring);
-			if (ret != 0)
-				return ret;
-		}
-	}
-
-	return ret;
+	return 0;
 }
 struct i915_hw_ppgtt *
 i915_ppgtt_create(struct drm_device *dev, struct drm_i915_file_private *fpriv)
@@ -1181,22 +1140,22 @@ i915_ppgtt_create(struct drm_device *dev, struct drm_i915_file_private *fpriv)
 	return ppgtt;
 }
 
-void  i915_ppgtt_release(struct kref *kref)
+void __i915_vm_free(struct kref *kref)
 {
-	struct i915_hw_ppgtt *ppgtt =
-		container_of(kref, struct i915_hw_ppgtt, ref);
+	struct i915_address_space *vm =
+		container_of(kref, struct i915_address_space, ref);
 
 	trace_i915_ppgtt_release(&ppgtt->base);
 
 	/* vmas should already be unbound */
-	WARN_ON(!list_empty(&ppgtt->base.active_list));
-	WARN_ON(!list_empty(&ppgtt->base.inactive_list));
+	WARN_ON(!list_empty(&vm->active_list));
+	WARN_ON(!list_empty(&vm->inactive_list));
 
-	list_del(&ppgtt->base.global_link);
-	drm_mm_takedown(&ppgtt->base.mm);
+	list_del(&vm->global_link);
+	drm_mm_takedown(&vm->mm);
 
-	ppgtt->base.cleanup(&ppgtt->base);
-	kfree(ppgtt);
+	vm->cleanup(vm);
+	kfree(vm);
 }
 
 static void
@@ -1210,6 +1169,7 @@ ppgtt_bind_vma(struct i915_vma *vma,
 
 	vma->vm->insert_entries(vma->vm, vma->obj->pages, vma->node.start,
 				cache_level, flags);
+	vma->vm->dirty = true;
 }
 
 static void ppgtt_unbind_vma(struct i915_vma *vma)
@@ -1261,15 +1221,15 @@ static void undo_idling(struct drm_i915_private *dev_priv, bool interruptible)
 void i915_check_and_clear_faults(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_engine_cs *ring;
+	struct intel_engine_cs *engine;
 	int i;
 
 	if (INTEL_INFO(dev)->gen < 6)
 		return;
 
-	for_each_ring(ring, dev_priv, i) {
+	for_each_engine(engine, dev_priv, i) {
 		u32 fault_reg;
-		fault_reg = I915_READ(RING_FAULT_REG(ring));
+		fault_reg = I915_READ(RING_FAULT_REG(engine));
 		if (fault_reg & RING_FAULT_VALID) {
 			DRM_DEBUG_DRIVER("Unexpected fault\n"
 					 "\tAddr: 0x%08lx\n"
@@ -1280,11 +1240,11 @@ void i915_check_and_clear_faults(struct drm_device *dev)
 					 fault_reg & RING_FAULT_GTTSEL_MASK ? "GGTT" : "PPGTT",
 					 RING_FAULT_SRCID(fault_reg),
 					 RING_FAULT_FAULT_TYPE(fault_reg));
-			I915_WRITE(RING_FAULT_REG(ring),
+			I915_WRITE(RING_FAULT_REG(engine),
 				   fault_reg & ~RING_FAULT_VALID);
 		}
 	}
-	POSTING_READ(RING_FAULT_REG(&dev_priv->ring[RCS]));
+	POSTING_READ(RING_FAULT_REG(RCS_ENGINE(dev_priv)));
 }
 
 static void i915_ggtt_flush(struct drm_i915_private *dev_priv)
@@ -1549,6 +1509,7 @@ static void i915_ggtt_clear_range(struct i915_address_space *vm,
 {
 	unsigned first_entry = start >> PAGE_SHIFT;
 	unsigned num_entries = length >> PAGE_SHIFT;
+
 	intel_gtt_clear_range(first_entry, num_entries);
 }
 
@@ -1592,6 +1553,7 @@ static void ggtt_bind_vma(struct i915_vma *vma,
 						vma->node.start,
 						cache_level, flags);
 			vma->bound |= GLOBAL_BIND;
+			vma->vm->dirty = true;
 		}
 	}
 
@@ -1604,6 +1566,7 @@ static void ggtt_bind_vma(struct i915_vma *vma,
 					    vma->node.start,
 					    cache_level, flags);
 		vma->bound |= LOCAL_BIND;
+		vma->vm->dirty = true;
 	}
 }
 
@@ -2164,18 +2127,25 @@ int i915_gem_gtt_init(struct drm_device *dev)
 	return 0;
 }
 
-static struct i915_vma *__i915_gem_vma_create(struct drm_i915_gem_object *obj,
-					      struct i915_address_space *vm)
+static struct i915_vma *__i915_vma_create(struct drm_i915_gem_object *obj,
+					  struct i915_address_space *vm)
 {
-	struct i915_vma *vma = kzalloc(sizeof(*vma), GFP_KERNEL);
+	struct i915_vma *vma;
+	int n;
+
+	vma = kzalloc(sizeof(*vma), GFP_KERNEL);
 	if (vma == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	INIT_LIST_HEAD(&vma->vma_link);
+	kref_init(&vma->kref);
+	vma->vm = i915_vm_get(vm);
+	vma->obj = obj;
+
+	for (n = 0; n < I915_NUM_ENGINES; n++)
+		INIT_LIST_HEAD(&vma->last_read[n].engine_link);
+
 	INIT_LIST_HEAD(&vma->mm_list);
 	INIT_LIST_HEAD(&vma->exec_list);
-	vma->vm = vm;
-	vma->obj = obj;
 
 	switch (INTEL_INFO(vm->dev)->gen) {
 	case 9:
@@ -2205,23 +2175,33 @@ static struct i915_vma *__i915_gem_vma_create(struct drm_i915_gem_object *obj,
 	/* Keep GGTT vmas first to make debug easier */
 	if (i915_is_ggtt(vm))
 		list_add(&vma->vma_link, &obj->vma_list);
-	else {
+	else
 		list_add_tail(&vma->vma_link, &obj->vma_list);
-		i915_ppgtt_get(i915_vm_to_ppgtt(vm));
-	}
 
 	return vma;
 }
 
+void __i915_vma_free(struct kref *kref)
+{
+	struct i915_vma *vma = container_of(kref, typeof(*vma), kref);
+
+	WARN_ON(!list_empty(&vma->mm_list));
+	WARN_ON(!list_empty(&vma->exec_list));
+
+	list_del(&vma->vma_link);
+	i915_vm_put(vma->vm);
+	kfree(vma);
+}
+
 struct i915_vma *
-i915_gem_obj_lookup_or_create_vma(struct drm_i915_gem_object *obj,
-				  struct i915_address_space *vm)
+i915_gem_obj_get_vma(struct drm_i915_gem_object *obj,
+		     struct i915_address_space *vm)
 {
 	struct i915_vma *vma;
 
 	vma = i915_gem_obj_to_vma(obj, vm);
-	if (!vma)
-		vma = __i915_gem_vma_create(obj, vm);
+	if (vma)
+		return i915_vma_get(vma);
 
-	return vma;
+	return __i915_vma_create(obj, vm);
 }

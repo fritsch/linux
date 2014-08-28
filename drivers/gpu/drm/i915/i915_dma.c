@@ -143,13 +143,13 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		value = 1;
 		break;
 	case I915_PARAM_HAS_BSD:
-		value = intel_ring_initialized(&dev_priv->ring[VCS]);
+		value = intel_engine_initialized(&dev_priv->engine[VCS]);
 		break;
 	case I915_PARAM_HAS_BLT:
-		value = intel_ring_initialized(&dev_priv->ring[BCS]);
+		value = intel_engine_initialized(&dev_priv->engine[BCS]);
 		break;
 	case I915_PARAM_HAS_VEBOX:
-		value = intel_ring_initialized(&dev_priv->ring[VECS]);
+		value = intel_engine_initialized(&dev_priv->engine[VECS]);
 		break;
 	case I915_PARAM_HAS_RELAXED_FENCING:
 		value = 1;
@@ -179,7 +179,7 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		value = 1;
 		break;
 	case I915_PARAM_HAS_SEMAPHORES:
-		value = i915_semaphore_is_enabled(dev);
+		value = RCS_ENGINE(dev_priv)->semaphore.wait != NULL;
 		break;
 	case I915_PARAM_HAS_PRIME_VMAP_FLUSH:
 		value = 1;
@@ -514,8 +514,7 @@ static int i915_load_modeset_init(struct drm_device *dev)
 
 cleanup_gem:
 	mutex_lock(&dev->struct_mutex);
-	i915_gem_cleanup_ringbuffer(dev);
-	i915_gem_context_fini(dev);
+	i915_gem_fini(dev);
 	mutex_unlock(&dev->struct_mutex);
 cleanup_irq:
 	drm_irq_uninstall(dev);
@@ -699,6 +698,8 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	/* UMS needs agp support. */
 	if (!drm_core_check_feature(dev, DRIVER_MODESET) && !dev->agp)
 		return -EINVAL;
+
+	BUILD_BUG_ON(I915_NUM_ENGINES >= (1 << I915_NUM_ENGINE_BITS));
 
 	dev_priv = kzalloc(sizeof(*dev_priv), GFP_KERNEL);
 	if (dev_priv == NULL)
@@ -999,8 +1000,7 @@ int i915_driver_unload(struct drm_device *dev)
 		flush_workqueue(dev_priv->wq);
 
 		mutex_lock(&dev->struct_mutex);
-		i915_gem_cleanup_ringbuffer(dev);
-		i915_gem_context_fini(dev);
+		i915_gem_fini(dev);
 		mutex_unlock(&dev->struct_mutex);
 		i915_gem_cleanup_stolen(dev);
 	}
@@ -1084,8 +1084,6 @@ void i915_driver_postclose(struct drm_device *dev, struct drm_file *file)
 {
 	struct drm_i915_file_private *file_priv = file->driver_priv;
 
-	if (file_priv && file_priv->bsd_ring)
-		file_priv->bsd_ring = NULL;
 	kfree(file_priv);
 }
 

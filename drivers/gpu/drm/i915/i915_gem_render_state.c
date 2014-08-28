@@ -28,8 +28,15 @@
 #include "i915_drv.h"
 #include "intel_renderstate.h"
 
+struct render_state {
+	const struct intel_renderstate_rodata *rodata;
+	struct drm_i915_gem_object *obj;
+	u64 ggtt_offset;
+	int gen;
+};
+
 static const struct intel_renderstate_rodata *
-render_state_get_rodata(struct drm_device *dev, const int gen)
+render_state_get_rodata(const int gen)
 {
 	switch (gen) {
 	case 6:
@@ -45,19 +52,19 @@ render_state_get_rodata(struct drm_device *dev, const int gen)
 	return NULL;
 }
 
-static int render_state_init(struct render_state *so, struct drm_device *dev)
+static int render_state_init(struct render_state *so, struct i915_gem_request *rq)
 {
 	int ret;
 
-	so->gen = INTEL_INFO(dev)->gen;
-	so->rodata = render_state_get_rodata(dev, so->gen);
+	so->gen = INTEL_INFO(rq->i915)->gen;
+	so->rodata = render_state_get_rodata(so->gen);
 	if (so->rodata == NULL)
 		return 0;
 
 	if (so->rodata->batch_items * 4 > 4096)
 		return -EINVAL;
 
-	so->obj = i915_gem_alloc_object(dev, 4096);
+	so->obj = i915_gem_alloc_object(rq->i915->dev, 4096);
 	if (so->obj == NULL)
 		return -ENOMEM;
 
@@ -110,10 +117,6 @@ static int render_state_setup(struct render_state *so)
 	}
 	kunmap(page);
 
-	ret = i915_gem_object_set_to_gtt_domain(so->obj, false);
-	if (ret)
-		return ret;
-
 	if (rodata->reloc[reloc_index] != -1) {
 		DRM_ERROR("only %d relocs resolved\n", reloc_index);
 		return -EINVAL;
@@ -122,60 +125,47 @@ static int render_state_setup(struct render_state *so)
 	return 0;
 }
 
-void i915_gem_render_state_fini(struct render_state *so)
+static void render_state_fini(struct render_state *so)
 {
 	i915_gem_object_ggtt_unpin(so->obj);
 	drm_gem_object_unreference(&so->obj->base);
 }
 
-int i915_gem_render_state_prepare(struct intel_engine_cs *ring,
-				  struct render_state *so)
-{
-	int ret;
-
-	if (WARN_ON(ring->id != RCS))
-		return -ENOENT;
-
-	ret = render_state_init(so, ring->dev);
-	if (ret)
-		return ret;
-
-	if (so->rodata == NULL)
-		return 0;
-
-	ret = render_state_setup(so);
-	if (ret) {
-		i915_gem_render_state_fini(so);
-		return ret;
-	}
-
-	return 0;
-}
-
-int i915_gem_render_state_init(struct intel_engine_cs *ring)
+int i915_gem_render_state_init(struct i915_gem_request *rq)
 {
 	struct render_state so;
 	int ret;
 
-	ret = i915_gem_render_state_prepare(ring, &so);
+	if (WARN_ON(rq->engine->id != RCS))
+		return -ENOENT;
+
+	ret = render_state_init(&so, rq);
 	if (ret)
 		return ret;
 
 	if (so.rodata == NULL)
 		return 0;
 
-	ret = ring->dispatch_execbuffer(ring,
-					so.ggtt_offset,
-					so.rodata->batch_items * 4,
-					I915_DISPATCH_SECURE);
+	ret = render_state_setup(&so);
 	if (ret)
 		goto out;
 
-	i915_vma_move_to_active(i915_gem_obj_to_ggtt(so.obj), ring);
+	if (i915_gem_clflush_object(so.obj, false))
+		i915_gem_chipset_flush(rq->i915->dev);
 
-	ret = __i915_add_request(ring, NULL, so.obj, NULL);
+	ret = i915_request_emit_batchbuffer(rq, NULL,
+					    so.ggtt_offset,
+					    so.rodata->batch_items * 4,
+					    I915_DISPATCH_SECURE);
+	if (ret)
+		goto out;
+
+	so.obj->base.pending_read_domains = I915_GEM_DOMAIN_COMMAND;
+	drm_gem_object_reference(&so.obj->base);
+	i915_request_add_vma(rq, i915_gem_obj_get_ggtt(so.obj), 0);
+
 	/* __i915_add_request moves object to inactive if it fails */
 out:
-	i915_gem_render_state_fini(&so);
+	render_state_fini(&so);
 	return ret;
 }

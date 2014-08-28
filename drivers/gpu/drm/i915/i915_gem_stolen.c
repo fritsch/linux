@@ -512,7 +512,7 @@ i915_gem_object_create_stolen_for_preallocated(struct drm_device *dev,
 	if (gtt_offset == I915_GTT_OFFSET_NONE)
 		return obj;
 
-	vma = i915_gem_obj_lookup_or_create_vma(obj, ggtt);
+	vma = i915_gem_obj_get_vma(obj, ggtt);
 	if (IS_ERR(vma)) {
 		ret = PTR_ERR(vma);
 		goto err_out;
@@ -542,7 +542,7 @@ i915_gem_object_create_stolen_for_preallocated(struct drm_device *dev,
 	return obj;
 
 err_vma:
-	i915_gem_vma_destroy(vma);
+	i915_vma_put(vma);
 err_out:
 	drm_mm_remove_node(stolen);
 	kfree(stolen);

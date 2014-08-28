@@ -325,11 +325,10 @@ TRACE_EVENT(i915_gem_evict_vm,
 	    TP_printk("dev=%d, vm=%p", __entry->dev, __entry->vm)
 );
 
-TRACE_EVENT(i915_gem_ring_sync_to,
-	    TP_PROTO(struct intel_engine_cs *from,
-		     struct intel_engine_cs *to,
-		     u32 seqno),
-	    TP_ARGS(from, to, seqno),
+TRACE_EVENT(i915_gem_ring_wait,
+	    TP_PROTO(struct i915_gem_request *waiter,
+		     struct i915_gem_request *signaller),
+	    TP_ARGS(waiter, signaller),
 
 	    TP_STRUCT__entry(
 			     __field(u32, dev)
@@ -339,16 +338,38 @@ TRACE_EVENT(i915_gem_ring_sync_to,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = from->dev->primary->index;
-			   __entry->sync_from = from->id;
-			   __entry->sync_to = to->id;
-			   __entry->seqno = seqno;
+			   __entry->dev = waiter->i915->dev->primary->index;
+			   __entry->sync_from = waiter->engine->id;
+			   __entry->sync_to = signaller->engine->id;
+			   __entry->seqno = signaller->breadcrumb[waiter->engine->id];
 			   ),
 
-	    TP_printk("dev=%u, sync-from=%u, sync-to=%u, seqno=%u",
+	    TP_printk("dev=%u, sync-from=%u, sync-to=%u, seqno=%x",
 		      __entry->dev,
 		      __entry->sync_from, __entry->sync_to,
 		      __entry->seqno)
+);
+
+TRACE_EVENT(i915_gem_ring_switch_context,
+	    TP_PROTO(struct intel_engine_cs *engine, struct intel_context *ctx, u32 flags),
+	    TP_ARGS(engine, ctx, flags),
+
+	    TP_STRUCT__entry(
+			     __field(u32, dev)
+			     __field(u32, ring)
+			     __field(u32, ctx)
+			     __field(u32, flags)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->dev = engine->i915->dev->primary->index;
+			   __entry->ring = engine->id;
+			   __entry->ctx = ctx->file_priv ? ctx->user_handle : -1;
+			   __entry->flags = flags;
+			   ),
+
+	    TP_printk("dev=%u, ring=%u, ctx=%d, flags=0x%08x",
+		      __entry->dev, __entry->ring, __entry->ctx, __entry->flags)
 );
 
 TRACE_EVENT(i915_gem_ring_dispatch,
@@ -363,66 +384,84 @@ TRACE_EVENT(i915_gem_ring_dispatch,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
+			   __entry->dev = ring->i915->dev->primary->index;
 			   __entry->ring = ring->id;
 			   __entry->seqno = seqno;
 			   __entry->flags = flags;
 			   i915_trace_irq_get(ring, seqno);
 			   ),
 
-	    TP_printk("dev=%u, ring=%u, seqno=%u, flags=%x",
+	    TP_printk("dev=%u, ring=%u, seqno=%x, flags=%x",
 		      __entry->dev, __entry->ring, __entry->seqno, __entry->flags)
 );
 
-TRACE_EVENT(i915_gem_ring_flush,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 invalidate, u32 flush),
-	    TP_ARGS(ring, invalidate, flush),
+TRACE_EVENT(intel_ringbuffer_begin,
+	    TP_PROTO(struct intel_ringbuffer *ring, int need),
+	    TP_ARGS(ring, need),
 
 	    TP_STRUCT__entry(
 			     __field(u32, dev)
 			     __field(u32, ring)
-			     __field(u32, invalidate)
-			     __field(u32, flush)
+			     __field(u32, need)
+			     __field(u32, space)
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
-			   __entry->ring = ring->id;
-			   __entry->invalidate = invalidate;
-			   __entry->flush = flush;
+			   __entry->dev = ring->engine->i915->dev->primary->index;
+			   __entry->ring = ring->engine->id;
+			   __entry->need = need;
+			   __entry->space = intel_ring_space(ring);
 			   ),
 
-	    TP_printk("dev=%u, ring=%x, invalidate=%04x, flush=%04x",
-		      __entry->dev, __entry->ring,
-		      __entry->invalidate, __entry->flush)
+	    TP_printk("dev=%u, ring=%u, need=%u, space=%u",
+		      __entry->dev, __entry->ring, __entry->need, __entry->space)
 );
 
-DECLARE_EVENT_CLASS(i915_gem_request,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 seqno),
-	    TP_ARGS(ring, seqno),
+TRACE_EVENT(intel_ringbuffer_wait,
+	    TP_PROTO(struct intel_ringbuffer *ring, int need),
+	    TP_ARGS(ring, need),
 
 	    TP_STRUCT__entry(
 			     __field(u32, dev)
 			     __field(u32, ring)
-			     __field(u32, seqno)
+			     __field(u32, need)
+			     __field(u32, space)
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
-			   __entry->ring = ring->id;
-			   __entry->seqno = seqno;
+			   __entry->dev = ring->engine->i915->dev->primary->index;
+			   __entry->ring = ring->engine->id;
+			   __entry->need = need;
+			   __entry->space = intel_ring_space(ring);
 			   ),
 
-	    TP_printk("dev=%u, ring=%u, seqno=%u",
-		      __entry->dev, __entry->ring, __entry->seqno)
+	    TP_printk("dev=%u, ring=%u, need=%u, space=%u",
+		      __entry->dev, __entry->ring, __entry->need, __entry->space)
 );
 
-DEFINE_EVENT(i915_gem_request, i915_gem_request_add,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 seqno),
-	    TP_ARGS(ring, seqno)
+TRACE_EVENT(intel_ringbuffer_wrap,
+	    TP_PROTO(struct intel_ringbuffer *ring, int rem),
+	    TP_ARGS(ring, rem),
+
+	    TP_STRUCT__entry(
+			     __field(u32, dev)
+			     __field(u32, ring)
+			     __field(u32, rem)
+			     __field(u32, size)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->dev = ring->engine->i915->dev->primary->index;
+			   __entry->ring = ring->engine->id;
+			   __entry->rem = rem;
+			   __entry->size = ring->effective_size;
+			   ),
+
+	    TP_printk("dev=%u, ring=%u, rem=%u, size=%u",
+		      __entry->dev, __entry->ring, __entry->rem, __entry->size)
 );
 
-TRACE_EVENT(i915_gem_request_complete,
+TRACE_EVENT(i915_gem_ring_complete,
 	    TP_PROTO(struct intel_engine_cs *ring),
 	    TP_ARGS(ring),
 
@@ -433,23 +472,68 @@ TRACE_EVENT(i915_gem_request_complete,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
+			   __entry->dev = ring->i915->dev->primary->index;
 			   __entry->ring = ring->id;
-			   __entry->seqno = ring->get_seqno(ring, false);
+			   __entry->seqno = ring->get_seqno(ring);
 			   ),
 
-	    TP_printk("dev=%u, ring=%u, seqno=%u",
+	    TP_printk("dev=%u, ring=%u, seqno=%x",
 		      __entry->dev, __entry->ring, __entry->seqno)
 );
 
+DECLARE_EVENT_CLASS(i915_gem_request,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq),
+
+	    TP_STRUCT__entry(
+			     __field(u32, dev)
+			     __field(u32, ring)
+			     __field(u32, seqno)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->dev = rq->i915->dev->primary->index;
+			   __entry->ring = rq->engine->id;
+			   __entry->seqno = rq->seqno;
+			   ),
+
+	    TP_printk("dev=%u, ring=%u, seqno=%x",
+		      __entry->dev, __entry->ring, __entry->seqno)
+);
+
+DEFINE_EVENT(i915_gem_request, i915_gem_request_emit_flush,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
+DEFINE_EVENT(i915_gem_request, i915_gem_request_emit_batch,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
+DEFINE_EVENT(i915_gem_request, i915_gem_request_emit_breadcrumb,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
+DEFINE_EVENT(i915_gem_request, i915_gem_request_commit,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
+DEFINE_EVENT(i915_gem_request, i915_gem_request_complete,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
+);
+
 DEFINE_EVENT(i915_gem_request, i915_gem_request_retire,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 seqno),
-	    TP_ARGS(ring, seqno)
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq)
 );
 
 TRACE_EVENT(i915_gem_request_wait_begin,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 seqno),
-	    TP_ARGS(ring, seqno),
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq),
 
 	    TP_STRUCT__entry(
 			     __field(u32, dev)
@@ -465,47 +549,38 @@ TRACE_EVENT(i915_gem_request_wait_begin,
 	     * less desirable.
 	     */
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
-			   __entry->ring = ring->id;
-			   __entry->seqno = seqno;
-			   __entry->blocking = mutex_is_locked(&ring->dev->struct_mutex);
+			   __entry->dev = rq->i915->dev->primary->index;
+			   __entry->ring = rq->engine->id;
+			   __entry->seqno = rq->seqno;
+			   __entry->blocking = mutex_is_locked(&rq->i915->dev->struct_mutex);
 			   ),
 
-	    TP_printk("dev=%u, ring=%u, seqno=%u, blocking=%s",
+	    TP_printk("dev=%u, ring=%u, seqno=%x, blocking?=%s",
 		      __entry->dev, __entry->ring, __entry->seqno,
 		      __entry->blocking ?  "yes (NB)" : "no")
 );
 
-DEFINE_EVENT(i915_gem_request, i915_gem_request_wait_end,
-	    TP_PROTO(struct intel_engine_cs *ring, u32 seqno),
-	    TP_ARGS(ring, seqno)
-);
-
-DECLARE_EVENT_CLASS(i915_ring,
-	    TP_PROTO(struct intel_engine_cs *ring),
-	    TP_ARGS(ring),
+TRACE_EVENT(i915_gem_request_wait_end,
+	    TP_PROTO(struct i915_gem_request *rq),
+	    TP_ARGS(rq),
 
 	    TP_STRUCT__entry(
 			     __field(u32, dev)
 			     __field(u32, ring)
+			     __field(u32, seqno)
+			     __field(bool, completed)
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = ring->dev->primary->index;
-			   __entry->ring = ring->id;
+			   __entry->dev = rq->i915->dev->primary->index;
+			   __entry->ring = rq->engine->id;
+			   __entry->seqno = rq->seqno;
+			   __entry->completed = rq->completed;
 			   ),
 
-	    TP_printk("dev=%u, ring=%u", __entry->dev, __entry->ring)
-);
-
-DEFINE_EVENT(i915_ring, i915_ring_wait_begin,
-	    TP_PROTO(struct intel_engine_cs *ring),
-	    TP_ARGS(ring)
-);
-
-DEFINE_EVENT(i915_ring, i915_ring_wait_end,
-	    TP_PROTO(struct intel_engine_cs *ring),
-	    TP_ARGS(ring)
+	    TP_printk("dev=%u, ring=%u, seqno=%x, completed=%s",
+		      __entry->dev, __entry->ring, __entry->seqno,
+		      __entry->completed ?  "yes" : "no")
 );
 
 TRACE_EVENT(i915_flip_request,

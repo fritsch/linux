@@ -270,8 +270,11 @@ i915_gem_evict_everything(struct drm_device *dev)
 	i915_gem_retire_requests(dev);
 
 	/* Having flushed everything, unbind() should never raise an error */
-	list_for_each_entry_safe(vm, v, &dev_priv->vm_list, global_link)
+	list_for_each_entry_safe(vm, v, &dev_priv->vm_list, global_link) {
+		i915_vm_get(vm);
 		WARN_ON(i915_gem_evict_vm(vm, false));
+		i915_vm_put(vm);
+	}
 
 	return 0;
 }

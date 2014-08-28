@@ -119,6 +119,7 @@ enum i915_cache_level;
  * will always be <= an objects lifetime. So object refcounting should cover us.
  */
 struct i915_vma {
+	struct kref kref;
 	struct drm_mm_node node;
 	struct drm_i915_gem_object *obj;
 	struct i915_address_space *vm;
@@ -144,6 +145,11 @@ struct i915_vma {
 	unsigned long exec_handle;
 	struct drm_i915_gem_exec_object2 *exec_entry;
 
+	struct {
+		struct i915_gem_request *request;
+		struct list_head engine_link;
+	} last_read[I915_NUM_ENGINES];
+
 	/**
 	 * How many users have pinned this object in GTT space. The following
 	 * users can each hold at most one reference: pwrite/pread, pin_ioctl
@@ -156,6 +162,10 @@ struct i915_vma {
 	 * bits with absolutely no headroom. So use 4 bits. */
 	unsigned int pin_count:4;
 #define DRM_I915_GEM_OBJECT_MAX_PIN_COUNT 0xf
+	unsigned int active:I915_NUM_ENGINE_BITS;
+	unsigned int exec_read:1;
+	unsigned int exec_write:1;
+	unsigned int exec_fence:2;
 
 	/** Unmap an object from an address space. This usually consists of
 	 * setting the valid PTE entries to a reserved scratch page. */
@@ -167,11 +177,14 @@ struct i915_vma {
 };
 
 struct i915_address_space {
+	struct kref ref;
 	struct drm_mm mm;
 	struct drm_device *dev;
 	struct list_head global_link;
 	unsigned long start;		/* Start offset always 0 for dri2 */
 	size_t total;		/* size addr space maps (ex. 2GB for ggtt) */
+
+	bool dirty;
 
 	struct {
 		dma_addr_t addr;
@@ -246,7 +259,6 @@ struct i915_gtt {
 
 struct i915_hw_ppgtt {
 	struct i915_address_space base;
-	struct kref ref;
 	struct drm_mm_node node;
 	unsigned num_pd_entries;
 	unsigned num_pd_pages; /* gen8+ */
@@ -267,10 +279,27 @@ struct i915_hw_ppgtt {
 	struct drm_i915_file_private *file_priv;
 
 	int (*enable)(struct i915_hw_ppgtt *ppgtt);
-	int (*switch_mm)(struct i915_hw_ppgtt *ppgtt,
-			 struct intel_engine_cs *ring);
+	int (*switch_mm)(struct i915_gem_request *rq,
+			 struct i915_hw_ppgtt *ppgtt);
 	void (*debug_dump)(struct i915_hw_ppgtt *ppgtt, struct seq_file *m);
 };
+
+void __i915_vma_free(struct kref *kref);
+
+static inline struct i915_vma *
+i915_vma_get(struct i915_vma *vma)
+{
+	if (vma)
+		kref_get(&vma->kref);
+	return vma;
+}
+
+static inline void
+i915_vma_put(struct i915_vma *vma)
+{
+	if (vma)
+		kref_put(&vma->kref, __i915_vma_free);
+}
 
 int i915_gem_gtt_init(struct drm_device *dev);
 void i915_gem_init_global_gtt(struct drm_device *dev);
@@ -281,18 +310,20 @@ void i915_global_gtt_cleanup(struct drm_device *dev);
 
 int i915_ppgtt_init(struct drm_device *dev, struct i915_hw_ppgtt *ppgtt);
 int i915_ppgtt_init_hw(struct drm_device *dev);
-void i915_ppgtt_release(struct kref *kref);
 struct i915_hw_ppgtt *i915_ppgtt_create(struct drm_device *dev,
 					struct drm_i915_file_private *fpriv);
-static inline void i915_ppgtt_get(struct i915_hw_ppgtt *ppgtt)
+void __i915_vm_free(struct kref *kref);
+static inline struct i915_address_space *
+i915_vm_get(struct i915_address_space *vm)
 {
-	if (ppgtt)
-		kref_get(&ppgtt->ref);
+	if (vm)
+		kref_get(&vm->ref);
+	return vm;
 }
-static inline void i915_ppgtt_put(struct i915_hw_ppgtt *ppgtt)
+static inline void i915_vm_put(struct i915_address_space *vm)
 {
-	if (ppgtt)
-		kref_put(&ppgtt->ref, i915_ppgtt_release);
+	if (vm)
+		kref_put(&vm->ref, __i915_vm_free);
 }
 
 void i915_check_and_clear_faults(struct drm_device *dev);

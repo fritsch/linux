@@ -98,14 +98,14 @@ static void intel_increase_pllclock(struct drm_device *dev,
  * intel_mark_fb_busy - mark given planes as busy
  * @dev: DRM device
  * @frontbuffer_bits: bits for the affected planes
- * @ring: optional ring for asynchronous commands
+ * @rq: optional request for asynchronous commands
  *
  * This function gets called every time the screen contents change. It can be
  * used to keep e.g. the update rate at the nominal refresh rate with DRRS.
  */
 static void intel_mark_fb_busy(struct drm_device *dev,
 			       unsigned frontbuffer_bits,
-			       struct intel_engine_cs *ring)
+			       struct i915_gem_request *rq)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	enum pipe pipe;
@@ -118,15 +118,15 @@ static void intel_mark_fb_busy(struct drm_device *dev,
 			continue;
 
 		intel_increase_pllclock(dev, pipe);
-		if (ring && intel_fbc_enabled(dev))
-			ring->fbc_dirty = true;
+		if (rq && intel_fbc_enabled(dev))
+			rq->pending_flush |= I915_KICK_FBC;
 	}
 }
 
 /**
  * intel_fb_obj_invalidate - invalidate frontbuffer object
  * @obj: GEM object to invalidate
- * @ring: set for asynchronous rendering
+ * @rq: set for asynchronous rendering
  *
  * This function gets called every time rendering on the given object starts and
  * frontbuffer caching (fbc, low refresh rate for DRRS, panel self refresh) must
@@ -135,7 +135,7 @@ static void intel_mark_fb_busy(struct drm_device *dev,
  * scheduled.
  */
 void intel_fb_obj_invalidate(struct drm_i915_gem_object *obj,
-			     struct intel_engine_cs *ring)
+			     struct i915_gem_request *rq)
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -145,7 +145,7 @@ void intel_fb_obj_invalidate(struct drm_i915_gem_object *obj,
 	if (!obj->frontbuffer_bits)
 		return;
 
-	if (ring) {
+	if (rq) {
 		mutex_lock(&dev_priv->fb_tracking.lock);
 		dev_priv->fb_tracking.busy_bits
 			|= obj->frontbuffer_bits;
@@ -154,7 +154,7 @@ void intel_fb_obj_invalidate(struct drm_i915_gem_object *obj,
 		mutex_unlock(&dev_priv->fb_tracking.lock);
 	}
 
-	intel_mark_fb_busy(dev, obj->frontbuffer_bits, ring);
+	intel_mark_fb_busy(dev, obj->frontbuffer_bits, rq);
 
 	intel_edp_psr_invalidate(dev, obj->frontbuffer_bits);
 }
