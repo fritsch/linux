@@ -240,6 +240,7 @@
 #define MI_LOAD_SCAN_LINES_INCL MI_INSTR(0x12, 0)
 #define MI_DISPLAY_FLIP		MI_INSTR(0x14, 2)
 #define MI_DISPLAY_FLIP_I915	MI_INSTR(0x14, 1)
+#define   MI_DISPLAY_FLIP_ASYNC	(1 << 22)
 #define   MI_DISPLAY_FLIP_PLANE(n) ((n) << 20)
 /* IVB has funny definitions for which plane to flip. */
 #define   MI_DISPLAY_FLIP_IVB_PLANE_A  (0 << 19)
@@ -258,6 +259,11 @@
 #define   MI_DISPLAY_FLIP_SKL_PLANE_3_A	(7 << 8)
 #define   MI_DISPLAY_FLIP_SKL_PLANE_3_B	(8 << 8)
 #define   MI_DISPLAY_FLIP_SKL_PLANE_3_C	(9 << 8)
+/* These go in the bottom of the base address value */
+#define   MI_DISPLAY_FLIP_TYPE_SYNC    (0 << 0)
+#define   MI_DISPLAY_FLIP_TYPE_ASYNC   (1 << 0)
+#define   MI_DISPLAY_FLIP_TYPE_STEREO  (2 << 0)
+
 #define MI_SEMAPHORE_MBOX	MI_INSTR(0x16, 1) /* gen6, gen7 */
 #define   MI_SEMAPHORE_GLOBAL_GTT    (1<<22)
 #define   MI_SEMAPHORE_UPDATE	    (1<<21)

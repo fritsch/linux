@@ -705,8 +705,9 @@ struct intel_unpin_work {
 	struct i915_gem_request *flip_queued_request;
 	int flip_queued_vblank;
 	int flip_ready_vblank;
-	bool enable_stall_check;
-	bool rcs_active;
+	bool enable_stall_check:1;
+	bool rcs_active:1;
+	bool async:1;
 };
 
 struct intel_set_config {

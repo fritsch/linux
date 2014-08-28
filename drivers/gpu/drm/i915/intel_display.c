@@ -2218,11 +2218,14 @@ intel_pin_and_fence_fb_obj(struct drm_plane *plane,
 			alignment = 64 * 1024;
 		break;
 	case I915_TILING_X:
-		if (INTEL_INFO(dev)->gen >= 9)
+		if (INTEL_INFO(dev)->gen >= 9) {
 			alignment = 256 * 1024;
-		else {
-			/* pin() will align the object as required by fence */
-			alignment = 0;
+		} else {
+			/* Async page flipping requires X tiling and 
+			 * 32kB alignment, so just make all X tiled
+			 * frame buffers aligned for that.
+			 */
+			alignment = 32 * 1024;
 		}
 		break;
 	case I915_TILING_Y:
@@ -9277,28 +9280,23 @@ static int intel_gen6_queue_flip(struct i915_gem_request *rq,
 				 struct drm_i915_gem_object *obj,
 				 uint32_t flags)
 {
-	struct drm_i915_private *dev_priv = rq->i915;
 	struct intel_ringbuffer *ring;
-	uint32_t pf, pipesrc;
+	u32 cmd, base;
 
-	ring = intel_ring_begin(rq, 4);
+	ring = intel_ring_begin(rq, 3);
 	if (IS_ERR(ring))
 		return PTR_ERR(ring);
 
-	intel_ring_emit(ring, MI_DISPLAY_FLIP |
-			MI_DISPLAY_FLIP_PLANE(crtc->plane));
-	intel_ring_emit(ring, fb->pitches[0] | obj->tiling_mode);
-	intel_ring_emit(ring, crtc->unpin_work->gtt_offset);
+	cmd = MI_DISPLAY_FLIP_I915 | MI_DISPLAY_FLIP_PLANE(crtc->plane);
+	base = crtc->unpin_work->gtt_offset;
+	if (flags & DRM_MODE_PAGE_FLIP_ASYNC) {
+		cmd |= MI_DISPLAY_FLIP_ASYNC;
+		base |= MI_DISPLAY_FLIP_TYPE_ASYNC;
+	}
 
-	/* Contrary to the suggestions in the documentation,
-	 * "Enable Panel Fitter" does not seem to be required when page
-	 * flipping with a non-native mode, and worse causes a normal
-	 * modeset to fail.
-	 * pf = I915_READ(PF_CTL(crtc->pipe)) & PF_ENABLE;
-	 */
-	pf = 0;
-	pipesrc = I915_READ(PIPESRC(crtc->pipe)) & 0x0fff0fff;
-	intel_ring_emit(ring, pf | pipesrc);
+	intel_ring_emit(ring, cmd);
+	intel_ring_emit(ring, fb->pitches[0] | obj->tiling_mode);
+	intel_ring_emit(ring, base);
 	intel_ring_advance(ring);
 
 	return 0;
@@ -9312,6 +9310,7 @@ static int intel_gen7_queue_flip(struct i915_gem_request *rq,
 {
 	struct intel_ringbuffer *ring;
 	uint32_t plane_bit = 0;
+	u32 cmd, base;
 	int len, ret;
 
 	switch (crtc->plane) {
@@ -9386,9 +9385,16 @@ static int intel_gen7_queue_flip(struct i915_gem_request *rq,
 			intel_ring_emit(ring, 0);
 	}
 
-	intel_ring_emit(ring, MI_DISPLAY_FLIP_I915 | plane_bit);
+	cmd = MI_DISPLAY_FLIP_I915 | plane_bit;
+	base = crtc->unpin_work->gtt_offset;
+	if (flags & DRM_MODE_PAGE_FLIP_ASYNC) {
+		cmd |= MI_DISPLAY_FLIP_ASYNC;
+		base |= MI_DISPLAY_FLIP_TYPE_ASYNC;
+	}
+
+	intel_ring_emit(ring, cmd);
 	intel_ring_emit(ring, fb->pitches[0] | obj->tiling_mode);
-	intel_ring_emit(ring, crtc->unpin_work->gtt_offset);
+	intel_ring_emit(ring, base);
 	intel_ring_advance(ring);
 
 	return 0;
@@ -9455,7 +9461,8 @@ static int intel_gen9_queue_flip(struct i915_gem_request *rq,
 
 static bool use_mmio_flip(struct intel_crtc *intel_crtc,
 			  struct intel_engine_cs *engine,
-			  struct drm_i915_gem_object *obj)
+			  struct drm_i915_gem_object *obj,
+			  unsigned flags)
 {
 	/*
 	 * This is not being used for older platforms, because
@@ -9474,6 +9481,9 @@ static bool use_mmio_flip(struct intel_crtc *intel_crtc,
 	if (__i915_reset_in_progress(intel_crtc->reset_counter) |
 	    __i915_terminally_wedged(intel_crtc->reset_counter))
 		return true;
+
+	if (flags & DRM_MODE_PAGE_FLIP_ASYNC)
+		return false; /* XXX undecided */
 
 	if (i915.use_mmio_flip < 0)
 		return false;
@@ -9681,6 +9691,14 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 	     fb->pitches[0] != crtc->primary->fb->pitches[0]))
 		return -EINVAL;
 
+	if (page_flip_flags & DRM_MODE_PAGE_FLIP_ASYNC) {
+		if (obj->tiling_mode != I915_TILING_X)
+			return -EINVAL;
+
+		if (to_intel_framebuffer(old_fb)->obj->tiling_mode != I915_TILING_X)
+			return -EINVAL;
+	}
+
 	if (i915_terminally_wedged(&dev_priv->gpu_error))
 		goto out_hang;
 
@@ -9703,11 +9721,15 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 		/* Before declaring the flip queue wedged, check if
 		 * the hardware completed the operation behind our backs.
 		 */
-		if (__intel_pageflip_stall_check(dev, crtc)) {
+		if (intel_crtc->unpin_work->async ||
+		    __intel_pageflip_stall_check(dev, crtc)) {
 			DRM_DEBUG_DRIVER("flip queue: previous flip completed, continuing\n");
 			page_flip_completed(intel_crtc);
 		} else {
-			DRM_DEBUG_DRIVER("flip queue: crtc already busy\n");
+			DRM_DEBUG_DRIVER("flip queue: crtc already busy: flip queud at %d, ready at %d, now %d\n",
+					 intel_crtc->unpin_work->flip_queued_vblank,
+					 intel_crtc->unpin_work->flip_ready_vblank,
+					 drm_vblank_count(dev, intel_crtc->pipe));
 			spin_unlock_irq(&dev->event_lock);
 
 			drm_crtc_vblank_put(crtc);
@@ -9733,6 +9755,7 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 
 	work->pending_flip_obj = obj;
 	work->rcs_active = RCS_ENGINE(dev_priv)->last_request != NULL;
+	work->async = page_flip_flags & DRM_MODE_PAGE_FLIP_ASYNC;
 
 	atomic_inc(&intel_crtc->unpin_work_count);
 	intel_crtc->reset_counter = atomic_read(&dev_priv->gpu_error.reset_counter);
@@ -9755,7 +9778,7 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 		engine = &dev_priv->engine[RCS];
 	}
 
-	if (use_mmio_flip(intel_crtc, engine, obj)) {
+	if (use_mmio_flip(intel_crtc, engine, obj, page_flip_flags)) {
 		rq = i915_request_get(obj->last_write.request);
 
 		ret = intel_pin_and_fence_fb_obj(crtc->primary, fb, rq);
@@ -13031,6 +13054,9 @@ void intel_modeset_init(struct drm_device *dev)
 		dev->mode_config.cursor_width = MAX_CURSOR_WIDTH;
 		dev->mode_config.cursor_height = MAX_CURSOR_HEIGHT;
 	}
+
+	if (INTEL_INFO(dev)->gen >= 6)
+		dev->mode_config.async_page_flip = true;
 
 	dev->mode_config.fb_base = dev_priv->gtt.mappable_base;
 
