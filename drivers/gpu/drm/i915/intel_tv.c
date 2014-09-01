@@ -1173,7 +1173,7 @@ static const struct drm_display_mode reported_modes[] = {
  * \return true if TV is connected.
  * \return false if TV is disconnected.
  */
-static int
+static enum drm_connector_status
 intel_tv_detect_type(struct intel_tv *intel_tv,
 		      struct drm_connector *connector)
 {
@@ -1182,9 +1182,9 @@ intel_tv_detect_type(struct intel_tv *intel_tv,
 	struct intel_crtc *intel_crtc = to_intel_crtc(crtc);
 	struct drm_device *dev = encoder->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
+	enum drm_connector_status status;
 	u32 tv_ctl, save_tv_ctl;
 	u32 tv_dac, save_tv_dac;
-	int type;
 
 	/* Disable TV interrupts around load detect or we'll recurse */
 	if (connector->polled & DRM_CONNECTOR_POLL_HPD) {
@@ -1232,7 +1232,6 @@ intel_tv_detect_type(struct intel_tv *intel_tv,
 	intel_wait_for_vblank(intel_tv->base.base.dev,
 			      to_intel_crtc(intel_tv->base.base.crtc)->pipe);
 
-	type = -1;
 	tv_dac = I915_READ(TV_DAC);
 	DRM_DEBUG_KMS("TV detected: %x, %x\n", tv_ctl, tv_dac);
 	/*
@@ -1241,18 +1240,19 @@ intel_tv_detect_type(struct intel_tv *intel_tv,
 	 *  1 0 X svideo
 	 *  0 0 0 Component
 	 */
+	status = connector_status_connected;
 	if ((tv_dac & TVDAC_SENSE_MASK) == (TVDAC_B_SENSE | TVDAC_C_SENSE)) {
 		DRM_DEBUG_KMS("Detected Composite TV connection\n");
-		type = DRM_MODE_CONNECTOR_Composite;
+		intel_tv->type = DRM_MODE_CONNECTOR_Composite;
 	} else if ((tv_dac & (TVDAC_A_SENSE|TVDAC_B_SENSE)) == TVDAC_A_SENSE) {
 		DRM_DEBUG_KMS("Detected S-Video TV connection\n");
-		type = DRM_MODE_CONNECTOR_SVIDEO;
+		intel_tv->type = DRM_MODE_CONNECTOR_SVIDEO;
 	} else if ((tv_dac & TVDAC_SENSE_MASK) == 0) {
 		DRM_DEBUG_KMS("Detected Component TV connection\n");
-		type = DRM_MODE_CONNECTOR_Component;
+		intel_tv->type = DRM_MODE_CONNECTOR_Component;
 	} else {
 		DRM_DEBUG_KMS("Unrecognised TV connection\n");
-		type = -1;
+		status = connector_status_disconnected;
 	}
 
 	I915_WRITE(TV_DAC, save_tv_dac & ~TVDAC_STATE_CHG_EN);
@@ -1272,7 +1272,7 @@ intel_tv_detect_type(struct intel_tv *intel_tv,
 		spin_unlock_irq(&dev_priv->irq_lock);
 	}
 
-	return type;
+	return status;
 }
 
 /*
@@ -1312,43 +1312,33 @@ static void intel_tv_find_better_format(struct drm_connector *connector)
 static enum drm_connector_status
 intel_tv_detect(struct drm_connector *connector, bool force)
 {
-	struct drm_display_mode mode;
 	struct intel_tv *intel_tv = intel_attached_tv(connector);
+	struct drm_display_mode mode = reported_modes[0];
+	struct intel_load_detect_pipe tmp;
+	struct drm_modeset_acquire_ctx ctx;
 	enum drm_connector_status status;
-	int type;
 
 	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] force=%d\n",
 		      connector->base.id, connector->name,
 		      force);
-
-	mode = reported_modes[0];
-
-	if (force) {
-		struct intel_load_detect_pipe tmp;
-		struct drm_modeset_acquire_ctx ctx;
-
-		drm_modeset_acquire_init(&ctx, 0);
-
-		if (intel_get_load_detect_pipe(connector, &mode, &tmp, &ctx)) {
-			type = intel_tv_detect_type(intel_tv, connector);
-			intel_release_load_detect_pipe(connector, &tmp);
-			status = type < 0 ?
-				connector_status_disconnected :
-				connector_status_connected;
-		} else
-			status = connector_status_unknown;
-
-		drm_modeset_drop_locks(&ctx);
-		drm_modeset_acquire_fini(&ctx);
-	} else
+	if (!force)
 		return connector->status;
+
+	drm_modeset_acquire_init(&ctx, 0);
+
+	if (intel_get_load_detect_pipe(connector, &mode, &tmp, &ctx)) {
+		status = intel_tv_detect_type(intel_tv, connector);
+		intel_release_load_detect_pipe(connector, &tmp);
+	} else
+		status = connector_status_unknown;
+
+	drm_modeset_drop_locks(&ctx);
+	drm_modeset_acquire_fini(&ctx);
 
 	if (status != connector_status_connected)
 		return status;
 
-	intel_tv->type = type;
 	intel_tv_find_better_format(connector);
-
 	return connector_status_connected;
 }
 
