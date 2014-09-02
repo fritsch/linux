@@ -4384,6 +4384,25 @@ intel_dp_get_edid(struct intel_dp *intel_dp)
 				    &intel_dp->aux.ddc);
 }
 
+static bool
+intel_dp_update_audio(struct intel_dp *intel_dp)
+{
+	struct intel_connector *intel_connector = intel_dp->attached_connector;
+	struct edid *edid = intel_connector->detect_edid ;
+	bool has_audio;
+
+	if (intel_dp->force_audio != HDMI_AUDIO_AUTO)
+		has_audio = intel_dp->force_audio == HDMI_AUDIO_ON;
+	else
+		has_audio = drm_detect_monitor_audio(edid);
+
+	if (has_audio == intel_dp->has_audio)
+		return false;
+
+	intel_dp->has_audio = has_audio;
+	return true;
+}
+
 static void
 intel_dp_set_edid(struct intel_dp *intel_dp)
 {
@@ -4393,10 +4412,7 @@ intel_dp_set_edid(struct intel_dp *intel_dp)
 	edid = intel_dp_get_edid(intel_dp);
 	intel_connector->detect_edid = edid;
 
-	if (intel_dp->force_audio != HDMI_AUDIO_AUTO)
-		intel_dp->has_audio = intel_dp->force_audio == HDMI_AUDIO_ON;
-	else
-		intel_dp->has_audio = drm_detect_monitor_audio(edid);
+	intel_dp_update_audio(intel_dp);
 }
 
 static void
@@ -4539,19 +4555,6 @@ static int intel_dp_get_modes(struct drm_connector *connector)
 	return 0;
 }
 
-static bool
-intel_dp_detect_audio(struct drm_connector *connector)
-{
-	bool has_audio = false;
-	struct edid *edid;
-
-	edid = to_intel_connector(connector)->detect_edid;
-	if (edid)
-		has_audio = drm_detect_monitor_audio(edid);
-
-	return has_audio;
-}
-
 static int
 intel_dp_set_property(struct drm_connector *connector,
 		      struct drm_property *property,
@@ -4569,22 +4572,14 @@ intel_dp_set_property(struct drm_connector *connector,
 
 	if (property == dev_priv->force_audio_property) {
 		int i = val;
-		bool has_audio;
 
 		if (i == intel_dp->force_audio)
 			return 0;
 
 		intel_dp->force_audio = i;
-
-		if (i == HDMI_AUDIO_AUTO)
-			has_audio = intel_dp_detect_audio(connector);
-		else
-			has_audio = (i == HDMI_AUDIO_ON);
-
-		if (has_audio == intel_dp->has_audio)
+		if (!intel_dp_update_audio(intel_dp))
 			return 0;
 
-		intel_dp->has_audio = has_audio;
 		goto done;
 	}
 
