@@ -4358,16 +4358,6 @@ g4x_dp_detect(struct intel_dp *intel_dp)
 	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
 	int ret;
 
-	/* Can't disconnect eDP, but you can close the lid... */
-	if (is_edp(intel_dp)) {
-		enum drm_connector_status status;
-
-		status = intel_panel_detect(dev);
-		if (status == connector_status_unknown)
-			status = connector_status_connected;
-		return status;
-	}
-
 	ret = g4x_digital_port_connected(dev, intel_dig_port);
 	if (ret == -EINVAL)
 		return connector_status_unknown;
