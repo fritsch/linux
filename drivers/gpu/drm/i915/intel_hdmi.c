@@ -1053,6 +1053,30 @@ intel_hdmi_unset_edid(struct drm_connector *connector)
 }
 
 static bool
+intel_hdmi_update_audio(struct drm_connector *connector)
+{
+	struct intel_hdmi *intel_hdmi = intel_attached_hdmi(connector);
+	struct edid *edid = to_intel_connector(connector)->detect_edid;
+	bool has_audio, has_sink;
+	bool changed = false;
+
+	if (intel_hdmi->force_audio == HDMI_AUDIO_AUTO)
+		has_audio = drm_detect_monitor_audio(edid);
+	else
+		has_audio = intel_hdmi->force_audio == HDMI_AUDIO_ON;
+	changed |= intel_hdmi->has_audio != has_audio;
+	intel_hdmi->has_audio = has_audio;
+
+	has_sink = false;
+	if (intel_hdmi->force_audio != HDMI_AUDIO_OFF_DVI)
+		has_sink = drm_detect_hdmi_monitor(edid);
+	changed |= intel_hdmi->has_hdmi_sink != has_sink;
+	intel_hdmi->has_hdmi_sink = has_sink;
+
+	return changed;
+}
+
+static bool
 intel_hdmi_set_edid(struct drm_connector *connector)
 {
 	struct drm_i915_private *dev_priv = to_i915(connector->dev);
@@ -1076,16 +1100,7 @@ intel_hdmi_set_edid(struct drm_connector *connector)
 	if (edid && edid->input & DRM_EDID_INPUT_DIGITAL) {
 		intel_hdmi->rgb_quant_range_selectable =
 			drm_rgb_quant_range_selectable(edid);
-
-		intel_hdmi->has_audio = drm_detect_monitor_audio(edid);
-		if (intel_hdmi->force_audio != HDMI_AUDIO_AUTO)
-			intel_hdmi->has_audio =
-				intel_hdmi->force_audio == HDMI_AUDIO_ON;
-
-		if (intel_hdmi->force_audio != HDMI_AUDIO_OFF_DVI)
-			intel_hdmi->has_hdmi_sink =
-				drm_detect_hdmi_monitor(edid);
-
+		intel_hdmi_update_audio(connector);
 		connected = true;
 	}
 
@@ -1141,19 +1156,6 @@ static int intel_hdmi_get_modes(struct drm_connector *connector)
 	return intel_connector_update_modes(connector, edid);
 }
 
-static bool
-intel_hdmi_detect_audio(struct drm_connector *connector)
-{
-	bool has_audio = false;
-	struct edid *edid;
-
-	edid = to_intel_connector(connector)->detect_edid;
-	if (edid && edid->input & DRM_EDID_INPUT_DIGITAL)
-		has_audio = drm_detect_monitor_audio(edid);
-
-	return has_audio;
-}
-
 static int
 intel_hdmi_set_property(struct drm_connector *connector,
 			struct drm_property *property,
@@ -1171,22 +1173,14 @@ intel_hdmi_set_property(struct drm_connector *connector,
 
 	if (property == dev_priv->force_audio_property) {
 		enum hdmi_force_audio i = val;
-		bool has_audio;
 
 		if (i == intel_hdmi->force_audio)
 			return 0;
 
 		intel_hdmi->force_audio = i;
+		if (!intel_hdmi_update_audio(connector))
+			return 0;
 
-		if (i == HDMI_AUDIO_AUTO)
-			has_audio = intel_hdmi_detect_audio(connector);
-		else
-			has_audio = (i == HDMI_AUDIO_ON);
-
-		if (i == HDMI_AUDIO_OFF_DVI)
-			intel_hdmi->has_hdmi_sink = 0;
-
-		intel_hdmi->has_audio = has_audio;
 		goto done;
 	}
 
