@@ -178,16 +178,6 @@ struct intel_engine_cs {
 	int		(*resume)(struct intel_engine_cs *engine);
 	void		(*cleanup)(struct intel_engine_cs *engine);
 
-	/* Some chipsets are not quite as coherent as advertised and need
-	 * an expensive kick to force a true read of the up-to-date seqno.
-	 * However, the up-to-date seqno is not always required and the last
-	 * seen value is good enough. Note that the seqno will always be
-	 * monotonic, even if not coherent.
-	 */
-	u32		(*get_seqno)(struct intel_engine_cs *engine);
-	void		(*set_seqno)(struct intel_engine_cs *engine,
-				     u32 seqno);
-
 	int		(*init_context)(struct i915_gem_request *rq);
 
 	int __must_check (*emit_flush)(struct i915_gem_request *rq,
@@ -288,7 +278,6 @@ struct intel_engine_cs {
 	struct {
 		struct drm_i915_gem_object *obj;
 		u32 gtt_offset;
-		volatile u32 *cpu_page;
 	} scratch;
 
 	bool needs_cmd_parser;
@@ -371,6 +360,12 @@ intel_write_status_page(struct intel_engine_cs *engine,
 #define I915_GEM_HWS_INDEX		0x20
 #define I915_GEM_HWS_SCRATCH_INDEX	0x30
 #define I915_GEM_HWS_SCRATCH_ADDR (I915_GEM_HWS_SCRATCH_INDEX << MI_STORE_DWORD_INDEX_SHIFT)
+
+static inline u32
+intel_engine_get_seqno(struct intel_engine_cs *engine)
+{
+	return intel_read_status_page(engine, I915_GEM_HWS_INDEX);
+}
 
 struct intel_ringbuffer *
 intel_engine_alloc_ring(struct intel_engine_cs *engine,

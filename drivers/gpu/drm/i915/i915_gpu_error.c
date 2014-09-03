@@ -914,7 +914,7 @@ static void i915_record_ring_state(struct drm_device *dev,
 	ering->waiting = waitqueue_active(&engine->irq_queue);
 	ering->instpm = I915_READ(RING_INSTPM(engine->mmio_base));
 	ering->acthd = intel_engine_get_active_head(engine);
-	ering->seqno = engine->get_seqno(engine);
+	ering->seqno = intel_engine_get_seqno(engine);
 	ering->request = engine->last_request ? engine->last_request->seqno : 0;
 	ering->hangcheck = engine->hangcheck.seqno;
 	memcpy(ering->breadcrumb, engine->breadcrumb, sizeof(ering->breadcrumb));

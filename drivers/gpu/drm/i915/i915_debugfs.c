@@ -552,7 +552,7 @@ static int i915_gem_pageflip_info(struct seq_file *m, void *data)
 				seq_printf(m, "Flip queued on %s at seqno %u, next seqno %u [current breadcrumb %u], completed? %d\n",
 					   rq->engine->name,
 					   rq->seqno, rq->i915->next_seqno,
-					   rq->engine->get_seqno(rq->engine),
+					   intel_engine_get_seqno(rq->engine),
 					   __i915_request_complete__wa(rq));
 			} else
 				seq_printf(m, "Flip not associated with any ring\n");
@@ -624,7 +624,7 @@ static void i915_engine_seqno_info(struct seq_file *m,
 {
 	seq_printf(m, "Current sequence (%s): seqno=%u, tag=%u [last breadcrumb %u, last request %u], next seqno=%u, next tag=%u\n",
 		   engine->name,
-		   engine->get_seqno(engine),
+		   intel_engine_get_seqno(engine),
 		   engine->tag,
 		   engine->breadcrumb[engine->id],
 		   engine->last_request ? engine->last_request->seqno : 0,

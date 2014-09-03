@@ -2287,7 +2287,7 @@ i915_gem_retire_requests__engine(struct intel_engine_cs *engine)
 	if (engine->last_request == NULL)
 		return;
 
-	if (!intel_engine_retire(engine, engine->get_seqno(engine)))
+	if (!intel_engine_retire(engine, intel_engine_get_seqno(engine)))
 		return;
 
 	while (!list_empty(&engine->read_list)) {

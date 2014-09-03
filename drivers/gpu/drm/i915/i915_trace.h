@@ -474,7 +474,7 @@ TRACE_EVENT(i915_gem_ring_complete,
 	    TP_fast_assign(
 			   __entry->dev = ring->i915->dev->primary->index;
 			   __entry->ring = ring->id;
-			   __entry->seqno = ring->get_seqno(ring);
+			   __entry->seqno = intel_engine_get_seqno(ring);
 			   ),
 
 	    TP_printk("dev=%u, ring=%u, seqno=%x",

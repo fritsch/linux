@@ -671,7 +671,7 @@ static int engine_add_request(struct i915_gem_request *rq)
 
 static bool engine_rq_is_complete(struct i915_gem_request *rq)
 {
-	return __i915_seqno_passed(rq->engine->get_seqno(rq->engine),
+	return __i915_seqno_passed(intel_engine_get_seqno(rq->engine),
 				   rq->seqno);
 }
 
@@ -708,12 +708,12 @@ init_pipe_control(struct intel_engine_cs *engine)
 
 	engine->scratch.obj = i915_gem_alloc_object(engine->i915->dev, 4096);
 	if (engine->scratch.obj == NULL) {
-		DRM_ERROR("Failed to allocate seqno page\n");
 		ret = -ENOMEM;
 		goto err;
 	}
 
-	ret = i915_gem_object_set_cache_level(engine->scratch.obj, I915_CACHE_LLC);
+	ret = i915_gem_object_set_cache_level(engine->scratch.obj,
+					      I915_CACHE_LLC);
 	if (ret)
 		goto err_unref;
 
@@ -721,23 +721,17 @@ init_pipe_control(struct intel_engine_cs *engine)
 	if (ret)
 		goto err_unref;
 
-	engine->scratch.gtt_offset = i915_gem_obj_ggtt_offset(engine->scratch.obj);
-	engine->scratch.cpu_page = kmap(sg_page(engine->scratch.obj->pages->sgl));
-	if (engine->scratch.cpu_page == NULL) {
-		ret = -ENOMEM;
-		goto err_unpin;
-	}
-
+	engine->scratch.gtt_offset =
+		i915_gem_obj_ggtt_offset(engine->scratch.obj);
 	DRM_DEBUG_DRIVER("%s pipe control offset: 0x%08x\n",
 			 engine->name, engine->scratch.gtt_offset);
 	return 0;
 
-err_unpin:
-	i915_gem_object_ggtt_unpin(engine->scratch.obj);
 err_unref:
 	drm_gem_object_unreference(&engine->scratch.obj->base);
-err:
 	engine->scratch.obj = NULL;
+err:
+	DRM_ERROR("Failed to allocate seqno page [%d]\n", ret);
 	return ret;
 }
 
@@ -1068,89 +1062,6 @@ gen6_emit_wait(struct i915_gem_request *waiter,
 	return 0;
 }
 
-#define PIPE_CONTROL_FLUSH(ring__, addr__)					\
-do {									\
-	intel_ring_emit(ring__, GFX_OP_PIPE_CONTROL(4) | PIPE_CONTROL_QW_WRITE |		\
-		 PIPE_CONTROL_DEPTH_STALL);				\
-	intel_ring_emit(ring__, (addr__) | PIPE_CONTROL_GLOBAL_GTT);			\
-	intel_ring_emit(ring__, 0);							\
-	intel_ring_emit(ring__, 0);							\
-} while (0)
-
-static int
-gen5_emit_breadcrumb(struct i915_gem_request *rq)
-{
-	u32 scratch_addr = rq->engine->scratch.gtt_offset + 2 * CACHELINE_BYTES;
-	struct intel_ringbuffer *ring;
-
-	/* For Ironlake, MI_USER_INTERRUPT was deprecated and apparently
-	 * incoherent with writes to memory, i.e. completely fubar,
-	 * so we need to use PIPE_NOTIFY instead.
-	 *
-	 * However, we also need to workaround the qword write
-	 * incoherence by flushing the 6 PIPE_NOTIFY buffers out to
-	 * memory before requesting an interrupt.
-	 */
-	ring = intel_ring_begin(rq, 32);
-	if (IS_ERR(ring))
-		return PTR_ERR(ring);
-
-	intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(4) | PIPE_CONTROL_QW_WRITE |
-			PIPE_CONTROL_WRITE_FLUSH |
-			PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE);
-	intel_ring_emit(ring, rq->engine->scratch.gtt_offset | PIPE_CONTROL_GLOBAL_GTT);
-	intel_ring_emit(ring, rq->seqno);
-	intel_ring_emit(ring, 0);
-
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-	scratch_addr += 2 * CACHELINE_BYTES; /* write to separate cachelines */
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-	scratch_addr += 2 * CACHELINE_BYTES;
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-	scratch_addr += 2 * CACHELINE_BYTES;
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-	scratch_addr += 2 * CACHELINE_BYTES;
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-	scratch_addr += 2 * CACHELINE_BYTES;
-	PIPE_CONTROL_FLUSH(ring, scratch_addr);
-
-	intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(4) | PIPE_CONTROL_QW_WRITE |
-			PIPE_CONTROL_WRITE_FLUSH |
-			PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE |
-			PIPE_CONTROL_NOTIFY);
-	intel_ring_emit(ring, rq->engine->scratch.gtt_offset | PIPE_CONTROL_GLOBAL_GTT);
-	intel_ring_emit(ring, rq->seqno);
-	intel_ring_emit(ring, 0);
-
-	intel_ring_advance(ring);
-
-	return 0;
-}
-
-static u32
-ring_get_seqno(struct intel_engine_cs *engine)
-{
-	return intel_read_status_page(engine, I915_GEM_HWS_INDEX);
-}
-
-static void
-ring_set_seqno(struct intel_engine_cs *engine, u32 seqno)
-{
-	intel_write_status_page(engine, I915_GEM_HWS_INDEX, seqno);
-}
-
-static u32
-gen5_render_get_seqno(struct intel_engine_cs *engine)
-{
-	return engine->scratch.cpu_page[0];
-}
-
-static void
-gen5_render_set_seqno(struct intel_engine_cs *engine, u32 seqno)
-{
-	engine->scratch.cpu_page[0] = seqno;
-}
-
 static void
 gen5_irq_get(struct intel_engine_cs *engine)
 {
@@ -1251,7 +1162,7 @@ bsd_emit_flush(struct i915_gem_request *rq,
 }
 
 static int
-i9xx_emit_breadcrumb(struct i915_gem_request *rq)
+emit_breadcrumb(struct i915_gem_request *rq)
 {
 	struct intel_ringbuffer *ring;
 
@@ -1656,10 +1567,8 @@ static int intel_engine_init(struct intel_engine_cs *engine,
 	engine->resume = engine_resume;
 	engine->cleanup = engine_cleanup;
 
-	engine->get_seqno = ring_get_seqno;
-	engine->set_seqno = ring_set_seqno;
-
 	engine->irq_barrier = nop_irq_barrier;
+	engine->emit_breadcrumb = emit_breadcrumb;
 
 	engine->power_domains = FORCEWAKE_ALL;
 	engine->get_ring = engine_get_ring;
@@ -1942,14 +1851,12 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 			engine->init_context = chv_render_init_context;
 		else
 			engine->init_context = bdw_render_init_context;
-		engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 		engine->emit_flush = gen8_render_emit_flush;
 		engine->irq_get = gen8_irq_get;
 		engine->irq_put = gen8_irq_put;
 		engine->irq_enable_mask = GT_RENDER_USER_INTERRUPT;
 		gen8_engine_init_semaphore(engine);
 	} else if (INTEL_INFO(dev_priv)->gen >= 6) {
-		engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 		engine->emit_flush = gen7_render_emit_flush;
 		if (INTEL_INFO(dev_priv)->gen == 6)
 			engine->emit_flush = gen6_render_emit_flush;
@@ -1979,17 +1886,13 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 			engine->semaphore.mbox.signal[VCS2] = GEN6_NOSYNC;
 		}
 	} else if (IS_GEN5(dev_priv)) {
-		engine->emit_breadcrumb = gen5_emit_breadcrumb;
 		engine->emit_flush = gen4_emit_flush;
-		engine->get_seqno = gen5_render_get_seqno;
-		engine->set_seqno = gen5_render_set_seqno;
 		engine->irq_get = gen5_irq_get;
 		engine->irq_put = gen5_irq_put;
 		engine->irq_enable_mask =
 			GT_RENDER_USER_INTERRUPT |
 			GT_RENDER_PIPECTL_NOTIFY_INTERRUPT;
 	} else {
-		engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 		if (INTEL_INFO(dev_priv)->gen < 4)
 			engine->emit_flush = gen2_emit_flush;
 		else
@@ -2023,7 +1926,7 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 	if (HAS_BROKEN_CS_TLB(dev_priv))
 		/* Workaround batchbuffer to combat CS tlb bug. */
 		ret = init_broken_cs_tlb_wa(engine);
-	else if (INTEL_INFO(dev_priv)->gen >= 5)
+	else if (INTEL_INFO(dev_priv)->gen >= 6)
 		ret = init_pipe_control(engine);
 	if (ret)
 		return ret;
@@ -2052,7 +1955,6 @@ int intel_init_bsd_engine(struct drm_i915_private *dev_priv)
 		if (IS_GEN6(dev_priv))
 			engine->write_tail = gen6_bsd_ring_write_tail;
 		engine->emit_flush = gen6_bsd_emit_flush;
-		engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 		if (INTEL_INFO(dev_priv)->gen >= 8) {
 			engine->irq_enable_mask =
 				GT_RENDER_USER_INTERRUPT << GEN8_VCS1_IRQ_SHIFT;
@@ -2085,7 +1987,6 @@ int intel_init_bsd_engine(struct drm_i915_private *dev_priv)
 		engine->mmio_base = BSD_RING_BASE;
 
 		engine->emit_flush = bsd_emit_flush;
-		engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 		if (IS_GEN5(dev_priv)) {
 			engine->irq_enable_mask = ILK_BSD_USER_INTERRUPT;
 			engine->irq_get = gen5_irq_get;
@@ -2126,7 +2027,6 @@ int intel_init_bsd2_engine(struct drm_i915_private *dev_priv)
 		engine->power_domains = FORCEWAKE_MEDIA;
 
 	engine->emit_flush = gen6_bsd_emit_flush;
-	engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 	engine->emit_batchbuffer = gen8_emit_batchbuffer;
 	engine->irq_enable_mask =
 			GT_RENDER_USER_INTERRUPT << GEN8_VCS2_IRQ_SHIFT;
@@ -2155,7 +2055,6 @@ int intel_init_blt_engine(struct drm_i915_private *dev_priv)
 		engine->power_domains = FORCEWAKE_BLITTER;
 
 	engine->emit_flush = gen6_blt_emit_flush;
-	engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 	if (INTEL_INFO(dev_priv)->gen >= 8) {
 		engine->irq_enable_mask =
 			GT_RENDER_USER_INTERRUPT << GEN8_BCS_IRQ_SHIFT;
@@ -2211,7 +2110,6 @@ int intel_init_vebox_engine(struct drm_i915_private *dev_priv)
 		engine->power_domains = FORCEWAKE_MEDIA;
 
 	engine->emit_flush = gen6_blt_emit_flush;
-	engine->emit_breadcrumb = i9xx_emit_breadcrumb;
 
 	if (INTEL_INFO(dev_priv)->gen >= 8) {
 		engine->irq_enable_mask =

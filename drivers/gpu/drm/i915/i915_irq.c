@@ -2964,7 +2964,7 @@ static void i915_hangcheck_elapsed(unsigned long data)
 		semaphore_clear_deadlocks(dev_priv);
 
 		acthd = intel_engine_get_active_head(engine);
-		seqno = engine->get_seqno(engine);
+		seqno = intel_engine_get_seqno(engine);
 		interrupts = atomic_read(&engine->interrupts);
 
 		if (engine_idle(engine)) {
