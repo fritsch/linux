@@ -1470,6 +1470,8 @@ int drm_mode_create_scaling_mode_property(struct drm_device *dev)
 		drm_property_create_enum(dev, 0, "scaling mode",
 				drm_scaling_mode_enum_list,
 				    ARRAY_SIZE(drm_scaling_mode_enum_list));
+	if (scaling_mode == NULL)
+		return -ENOMEM;
 
 	dev->mode_config.scaling_mode_property = scaling_mode;
 

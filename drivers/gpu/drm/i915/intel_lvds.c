@@ -975,10 +975,10 @@ void intel_lvds_init(struct drm_device *dev)
 	}
 
 	/* create the scaling mode property */
-	drm_mode_create_scaling_mode_property(dev);
-	drm_object_attach_property(&connector->base,
-				      dev->mode_config.scaling_mode_property,
-				      DRM_MODE_SCALE_ASPECT);
+	if (drm_mode_create_scaling_mode_property(dev) == 0)
+		drm_object_attach_property(&connector->base,
+					   dev->mode_config.scaling_mode_property,
+					   DRM_MODE_SCALE_ASPECT);
 	intel_connector->panel.fitting_mode = DRM_MODE_SCALE_ASPECT;
 	/*
 	 * LVDS discovery:
