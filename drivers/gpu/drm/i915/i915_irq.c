@@ -1000,7 +1000,6 @@ static void notify_ring(struct drm_device *dev,
 	atomic_inc(&engine->interrupts);
 
 	wake_up_all(&engine->irq_queue);
-	i915_queue_hangcheck(dev);
 }
 
 static void vlv_c0_read(struct drm_i915_private *dev_priv,
@@ -2875,9 +2874,11 @@ engine_stuck(struct intel_engine_cs *engine, u64 acthd)
  * we kick the ring. If we see no progress on three subsequent calls
  * we assume chip is wedged and try to fix it by resetting the chip.
  */
-static void i915_hangcheck_elapsed(unsigned long data)
+static void i915_hangcheck_elapsed(struct work_struct *work)
 {
-	struct drm_i915_private *dev_priv = (struct drm_i915_private *)data;
+	struct drm_i915_private *dev_priv =
+		container_of(work, typeof(*dev_priv),
+			     gpu_error.hangcheck_work.work);
 	struct intel_engine_cs *engine;
 	int i;
 	int busy_count = 0, rings_hung = 0;
@@ -2998,8 +2999,8 @@ void i915_queue_hangcheck(struct drm_device *dev)
 	if (!i915_module.enable_hangcheck)
 		return;
 
-	mod_timer(&to_i915(dev)->gpu_error.hangcheck_timer,
-		  round_jiffies_up(jiffies + DRM_I915_HANGCHECK_JIFFIES));
+	schedule_delayed_work(&to_i915(dev)->gpu_error.hangcheck_work,
+			      round_jiffies_up_relative(DRM_I915_HANGCHECK_JIFFIES));
 }
 
 static void ibx_irq_reset(struct drm_device *dev)
@@ -4248,9 +4249,8 @@ void intel_irq_init(struct drm_i915_private *dev_priv)
 	else
 		dev_priv->rps.pm_events = GEN6_PM_RPS_EVENTS;
 
-	setup_timer(&dev_priv->gpu_error.hangcheck_timer,
-		    i915_hangcheck_elapsed,
-		    (unsigned long) dev_priv);
+	INIT_DELAYED_WORK(&dev_priv->gpu_error.hangcheck_work,
+			  i915_hangcheck_elapsed);
 	INIT_DELAYED_WORK(&dev_priv->hotplug_reenable_work,
 			  intel_hpd_irq_reenable_work);
 
