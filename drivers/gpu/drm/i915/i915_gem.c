@@ -1677,26 +1677,21 @@ unlock:
 	mutex_unlock(&dev->struct_mutex);
 out:
 	switch (ret) {
-	case -EIO:
+	case 0:
 		/*
-		 * We eat errors when the gpu is terminally wedged to avoid
-		 * userspace unduly crashing (gl has no provisions for mmaps to
-		 * fail). But any other -EIO isn't ours (e.g. swap in failure)
-		 * and so needs to be reported.
+		 * Success. You may proceed.
 		 */
-		if (!i915_terminally_wedged(&dev_priv->gpu_error)) {
-			ret = VM_FAULT_SIGBUS;
-			break;
-		}
 	case -EAGAIN:
 		/*
 		 * EAGAIN means the gpu is hung and we'll wait for the error
 		 * handler to reset everything when re-faulting in
 		 * i915_mutex_lock_interruptible.
 		 */
-	case 0:
 	case -ERESTARTSYS:
 	case -EINTR:
+		/* Signal interruptus. Return to userspace and await
+		 * further instructions.
+		 */
 	case -EBUSY:
 		/*
 		 * EBUSY is ok: this just means that another thread
@@ -1707,6 +1702,20 @@ out:
 	case -ENOMEM:
 		ret = VM_FAULT_OOM;
 		break;
+	case -EIO:
+		/* The driver should never report an EIO here due to GPU hangs,
+		 * all requests shold have been reset and the object should
+		 * be idle. There should be no impediment for us to mmap the
+		 * object in those cases. It would be nice if we could throw
+		 * a warning in such cases, but...
+		 *
+		 * EIO can also arise from a failure to swap in pages,
+		 * for example. Here, we must report SIGBUS as there is
+		 * no recovery for memory corruption.
+		 *
+		 * And since we can have a wedged GPU and swap failure,
+		 * having a WARN here could be misleading.
+		 */
 	case -ENOSPC:
 	case -EFAULT:
 		ret = VM_FAULT_SIGBUS;
