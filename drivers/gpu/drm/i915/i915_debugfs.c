@@ -1309,14 +1309,37 @@ static int ironlake_drpc_info(struct seq_file *m)
 	return 0;
 }
 
+static int i915_gen6_forcewake_count_info(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	const char *domain_names[] = {
+		"render",
+		"media",
+	};
+	int i;
+
+	spin_lock_irq(&dev_priv->uncore.lock);
+	for (i = 0; i < FW_DOMAIN_COUNT; i++) {
+		if ((dev_priv->uncore.fw_domains & (1 << i)) == 0)
+			continue;
+
+		seq_printf(m, "%s.wake_count = %u\n",
+			   domain_names[i],
+			   dev_priv->uncore.fw_domain[i].wake_count);
+	}
+	spin_unlock_irq(&dev_priv->uncore.lock);
+
+	return 0;
+}
+
 static int vlv_drpc_info(struct seq_file *m)
 {
-
 	struct drm_info_node *node = m->private;
 	struct drm_device *dev = node->minor->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	u32 rpmodectl1, rcctl1;
-	unsigned fw_rendercount = 0, fw_mediacount = 0;
 
 	intel_runtime_pm_get(dev_priv);
 
@@ -1349,22 +1372,11 @@ static int vlv_drpc_info(struct seq_file *m)
 	seq_printf(m, "Media RC6 residency since boot: %u\n",
 		   I915_READ(VLV_GT_MEDIA_RC6));
 
-	spin_lock_irq(&dev_priv->uncore.lock);
-	fw_rendercount = dev_priv->uncore.fw_rendercount;
-	fw_mediacount = dev_priv->uncore.fw_mediacount;
-	spin_unlock_irq(&dev_priv->uncore.lock);
-
-	seq_printf(m, "Forcewake Render Count = %u\n", fw_rendercount);
-	seq_printf(m, "Forcewake Media Count = %u\n", fw_mediacount);
-
-
-	return 0;
+	return i915_gen6_forcewake_count_info(m, NULL);
 }
-
 
 static int gen6_drpc_info(struct seq_file *m)
 {
-
 	struct drm_info_node *node = m->private;
 	struct drm_device *dev = node->minor->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -1378,7 +1390,7 @@ static int gen6_drpc_info(struct seq_file *m)
 	intel_runtime_pm_get(dev_priv);
 
 	spin_lock_irq(&dev_priv->uncore.lock);
-	forcewake_count = dev_priv->uncore.forcewake_count;
+	forcewake_count = dev_priv->uncore.fw_domain[FW_DOMAIN_RENDER].wake_count;
 	spin_unlock_irq(&dev_priv->uncore.lock);
 
 	if (forcewake_count) {
@@ -1969,30 +1981,6 @@ static int i915_execlists(struct seq_file *m, void *data)
 
 	intel_runtime_pm_put(dev_priv);
 	mutex_unlock(&dev->struct_mutex);
-
-	return 0;
-}
-
-static int i915_gen6_forcewake_count_info(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	unsigned forcewake_count = 0, fw_rendercount = 0, fw_mediacount = 0;
-
-	spin_lock_irq(&dev_priv->uncore.lock);
-	if (IS_VALLEYVIEW(dev)) {
-		fw_rendercount = dev_priv->uncore.fw_rendercount;
-		fw_mediacount = dev_priv->uncore.fw_mediacount;
-	} else
-		forcewake_count = dev_priv->uncore.forcewake_count;
-	spin_unlock_irq(&dev_priv->uncore.lock);
-
-	if (IS_VALLEYVIEW(dev)) {
-		seq_printf(m, "fw_rendercount = %u\n", fw_rendercount);
-		seq_printf(m, "fw_mediacount = %u\n", fw_mediacount);
-	} else
-		seq_printf(m, "forcewake count = %u\n", forcewake_count);
 
 	return 0;
 }
