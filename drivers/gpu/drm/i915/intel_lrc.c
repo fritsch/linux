@@ -241,16 +241,9 @@ static u32 execlists_ctx_write_tail(struct drm_i915_gem_object *obj, u32 tail, u
 static void execlists_submit_pair(struct intel_engine_cs *engine,
 				  struct i915_gem_request *rq[2])
 {
-<<<<<<< HEAD
-	struct drm_device *dev = ring->dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	uint64_t temp = 0;
-=======
 	struct drm_i915_private *dev_priv = engine->i915;
 	uint64_t tmp;
->>>>>>> drm/i915: s/seqno/request/ tracking inside objects
 	uint32_t desc[4];
-	unsigned long flags;
 
 	/* XXX: You must always write both descriptors in the order below. */
 
@@ -267,33 +260,7 @@ static void execlists_submit_pair(struct intel_engine_cs *engine,
 	desc[1] = upper_32_bits(tmp);
 	desc[0] = lower_32_bits(tmp);
 
-	/* Set Force Wakeup bit to prevent GT from entering C6 while ELSP writes
-	 * are in progress.
-	 *
-	 * The other problem is that we can't just call gen6_gt_force_wake_get()
-	 * because that function calls intel_runtime_pm_get(), which might sleep.
-	 * Instead, we do the runtime_pm_get/put when creating/destroying requests.
-	 */
-	spin_lock_irqsave(&dev_priv->uncore.lock, flags);
-	if (IS_CHERRYVIEW(dev) || INTEL_INFO(dev)->gen >= 9) {
-		if (dev_priv->uncore.fw_rendercount++ == 0)
-			dev_priv->uncore.funcs.force_wake_get(dev_priv,
-							      FORCEWAKE_RENDER);
-		if (dev_priv->uncore.fw_mediacount++ == 0)
-			dev_priv->uncore.funcs.force_wake_get(dev_priv,
-							      FORCEWAKE_MEDIA);
-		if (INTEL_INFO(dev)->gen >= 9) {
-			if (dev_priv->uncore.fw_blittercount++ == 0)
-				dev_priv->uncore.funcs.force_wake_get(dev_priv,
-							FORCEWAKE_BLITTER);
-		}
-	} else {
-		if (dev_priv->uncore.forcewake_count++ == 0)
-			dev_priv->uncore.funcs.force_wake_get(dev_priv,
-							      FORCEWAKE_ALL);
-	}
-	spin_unlock_irqrestore(&dev_priv->uncore.lock, flags);
-
+	gen6_gt_force_wake_get(dev_priv, engine->power_domains);
 	I915_WRITE(RING_ELSP(engine), desc[1]);
 	I915_WRITE(RING_ELSP(engine), desc[0]);
 	I915_WRITE(RING_ELSP(engine), desc[3]);
@@ -302,28 +269,7 @@ static void execlists_submit_pair(struct intel_engine_cs *engine,
 
 	/* ELSP is a wo register, so use another nearby reg for posting instead */
 	POSTING_READ(RING_EXECLIST_STATUS(engine));
-
-	/* Release Force Wakeup (see the big comment above). */
-	spin_lock_irqsave(&dev_priv->uncore.lock, flags);
-	if (IS_CHERRYVIEW(dev) || INTEL_INFO(dev)->gen >= 9) {
-		if (--dev_priv->uncore.fw_rendercount == 0)
-			dev_priv->uncore.funcs.force_wake_put(dev_priv,
-							      FORCEWAKE_RENDER);
-		if (--dev_priv->uncore.fw_mediacount == 0)
-			dev_priv->uncore.funcs.force_wake_put(dev_priv,
-							      FORCEWAKE_MEDIA);
-		if (INTEL_INFO(dev)->gen >= 9) {
-			if (--dev_priv->uncore.fw_blittercount == 0)
-				dev_priv->uncore.funcs.force_wake_put(dev_priv,
-							FORCEWAKE_BLITTER);
-		}
-	} else {
-		if (--dev_priv->uncore.forcewake_count == 0)
-			dev_priv->uncore.funcs.force_wake_put(dev_priv,
-							      FORCEWAKE_ALL);
-	}
-
-	spin_unlock_irqrestore(&dev_priv->uncore.lock, flags);
+	gen6_gt_force_wake_put(dev_priv, engine->power_domains);
 }
 
 static u16 next_tag(struct intel_engine_cs *engine)
