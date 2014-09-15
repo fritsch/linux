@@ -646,6 +646,9 @@ static void intel_panel_set_backlight(struct intel_connector *connector,
 	hw_level = scale_user_to_hw(connector, user_level, user_max);
 	panel->backlight.level = hw_level;
 
+	DRM_DEBUG_KMS("user level = %d/%d, backlight = %d\n",
+		      user_level, user_max, hw_level);
+
 	if (panel->backlight.enabled)
 		intel_panel_actually_set_backlight(connector, hw_level);
 
@@ -680,11 +683,18 @@ void intel_panel_set_backlight_acpi(struct intel_connector *connector,
 	hw_level = clamp_user_to_hw(connector, user_level, user_max);
 	panel->backlight.level = hw_level;
 
-	if (panel->backlight.device)
+	DRM_DEBUG_KMS("user level = %d/%d, backlight = %d\n",
+		      user_level, user_max, hw_level);
+
+	if (panel->backlight.device) {
 		panel->backlight.device->props.brightness =
 			scale_hw_to_user(connector,
 					 panel->backlight.level,
 					 panel->backlight.device->props.max_brightness);
+		DRM_DEBUG_KMS("brightness = %d/%d\n",
+			      panel->backlight.device->props.brightness,
+			      panel->backlight.device->props.max_brightness);
+	}
 
 	if (panel->backlight.enabled)
 		intel_panel_actually_set_backlight(connector, hw_level);
@@ -963,12 +973,18 @@ void intel_panel_enable_backlight(struct intel_connector *connector)
 	WARN_ON(panel->backlight.max == 0);
 
 	if (panel->backlight.level == 0) {
+		DRM_DEBUG_KMS("overriding backlight level of 0, setting max %d\n",
+			      panel->backlight.max);
 		panel->backlight.level = panel->backlight.max;
-		if (panel->backlight.device)
+		if (panel->backlight.device) {
 			panel->backlight.device->props.brightness =
 				scale_hw_to_user(connector,
 						 panel->backlight.level,
 						 panel->backlight.device->props.max_brightness);
+			DRM_DEBUG_KMS("brightness = %d/%d\n",
+				      panel->backlight.device->props.brightness,
+				      panel->backlight.device->props.max_brightness);
+		}
 	}
 
 	dev_priv->display.enable_backlight(connector);
