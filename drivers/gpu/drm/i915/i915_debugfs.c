@@ -534,6 +534,34 @@ static int obj_rank_by_ggtt(void *priv, struct list_head *A, struct list_head *B
 	return i915_gem_obj_ggtt_offset(a) - i915_gem_obj_ggtt_offset(b);
 }
 
+static int i915_gem_aperture_info(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = m->private;
+	struct drm_i915_gem_get_aperture arg;
+	int ret;
+
+	ret = i915_gem_get_aperture_ioctl(node->minor->dev, &arg, NULL);
+	if (ret)
+		return ret;
+
+	seq_printf(m, "Total size of the GTT: %llu bytes\n",
+		   arg.aper_size);
+	seq_printf(m, "Available space in the GTT: %llu bytes\n",
+		   arg.aper_available_size);
+	seq_printf(m, "Total size of the mappable aperture: %llu bytes\n",
+		   arg.map_total_size);
+	seq_printf(m, "Available space in the mappable aperture: %llu bytes\n",
+		   arg.map_available_size);
+	seq_printf(m, "Single largest space in the mappable aperture: %llu bytes\n",
+		   arg.map_largest_size);
+	seq_printf(m, "Available space for fences: %llu bytes\n",
+		   arg.fence_available_size);
+	seq_printf(m, "Single largest fence available: %llu bytes\n",
+		   arg.fence_largest_size);
+
+	return 0;
+}
+
 static int i915_gem_gtt_info(struct seq_file *m, void *data)
 {
 	struct drm_info_node *node = m->private;
@@ -4299,6 +4327,7 @@ static int i915_debugfs_create(struct dentry *root,
 static const struct drm_info_list i915_debugfs_list[] = {
 	{"i915_capabilities", i915_capabilities, 0},
 	{"i915_gem_objects", i915_gem_object_info, 0},
+	{"i915_gem_aperture", i915_gem_aperture_info, 0},
 	{"i915_gem_gtt", i915_gem_gtt_info, 0},
 	{"i915_gem_pinned", i915_gem_gtt_info, 0, (void *) PINNED_LIST},
 	{"i915_gem_active", i915_gem_object_list_info, 0, (void *) ACTIVE_LIST},

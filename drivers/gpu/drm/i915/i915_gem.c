@@ -31,6 +31,7 @@
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
+#include <linux/list_sort.h>
 #include <linux/oom.h>
 #include <linux/shmem_fs.h>
 #include <linux/slab.h>
@@ -290,6 +291,49 @@ i915_gem_init_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static int obj_rank_by_ggtt(void *priv,
+			    struct list_head *A,
+			    struct list_head *B)
+{
+	struct drm_i915_gem_object *a = list_entry(A,typeof(*a), obj_exec_link);
+	struct drm_i915_gem_object *b = list_entry(B,typeof(*b), obj_exec_link);
+
+	return i915_gem_obj_ggtt_offset(a) - i915_gem_obj_ggtt_offset(b);
+}
+
+static u32 __fence_size(struct drm_i915_private *dev_priv, u32 start, u32 end)
+{
+	u32 size = end - start;
+	u32 fence_size;
+
+	if (INTEL_INFO(dev_priv)->gen < 4) {
+		u32 fence_max;
+		u32 fence_next;
+
+		if (IS_GEN3(dev_priv)) {
+			fence_max = I830_FENCE_MAX_SIZE_VAL << 20;
+			fence_next = 1024*1024;
+		} else {
+			fence_max = I830_FENCE_MAX_SIZE_VAL << 19;
+			fence_next = 512*1024;
+		}
+
+		fence_max = min(fence_max, size);
+		fence_size = 0;
+		while (fence_next <= fence_max) {
+			u32 base = ALIGN(start, fence_next);
+			if (base + fence_next > end)
+				break;
+
+			fence_size = fence_next;
+			fence_next <<= 1;
+		}
+	} else
+		fence_size = size;
+
+	return fence_size;
+}
+
 int
 i915_gem_get_aperture_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *file)
@@ -297,17 +341,75 @@ i915_gem_get_aperture_ioctl(struct drm_device *dev, void *data,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_i915_gem_get_aperture *args = data;
 	struct drm_i915_gem_object *obj;
-	size_t pinned;
+	struct list_head map_list;
+	const u32 map_limit = dev_priv->gtt.mappable_end;
+	size_t pinned, map_space, map_largest, fence_space, fence_largest;
+	u32 last, size;
+
+	INIT_LIST_HEAD(&map_list);
 
 	pinned = 0;
+	map_space = map_largest = 0;
+	fence_space = fence_largest = 0;
+
 	mutex_lock(&dev->struct_mutex);
-	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list)
-		if (i915_gem_obj_is_pinned(obj))
-			pinned += i915_gem_obj_ggtt_size(obj);
+	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
+		struct i915_vma *vma = i915_gem_obj_to_ggtt(obj);
+
+		if (vma == NULL || !vma->pin_count)
+			continue;
+
+		pinned += vma->node.size;
+
+		if (vma->node.start < map_limit)
+			list_add(&obj->obj_exec_link, &map_list);
+	}
+
+	last = 0;
+	list_sort(NULL, &map_list, obj_rank_by_ggtt);
+	while (!list_empty(&map_list)) {
+		struct i915_vma *vma;
+
+		obj = list_first_entry(&map_list, typeof(*obj), obj_exec_link);
+		list_del_init(&obj->obj_exec_link);
+
+		vma = i915_gem_obj_to_ggtt(obj);
+		if (last == 0)
+			goto skip_first;
+
+		size = vma->node.start - last;
+		if (size > map_largest)
+			map_largest = size;
+		map_space += size;
+
+		size = __fence_size(dev_priv, last, vma->node.start);
+		if (size > fence_largest)
+			fence_largest = size;
+		fence_space += size;
+
+skip_first:
+		last = vma->node.start + vma->node.size;
+	}
+	if (last < map_limit) {
+		size = map_limit - last;
+		if (size > map_largest)
+			map_largest = size;
+		map_space += size;
+
+		size = __fence_size(dev_priv, last, map_limit);
+		if (size > fence_largest)
+			fence_largest = size;
+		fence_space += size;
+	}
 	mutex_unlock(&dev->struct_mutex);
 
 	args->aper_size = dev_priv->gtt.base.total;
 	args->aper_available_size = args->aper_size - pinned;
+	args->map_available_size = map_space;
+	args->map_largest_size = map_largest;
+	args->map_total_size = dev_priv->gtt.mappable_end;
+	args->fence_available_size = fence_space;
+	args->fence_largest_size = fence_largest;
 
 	return 0;
 }

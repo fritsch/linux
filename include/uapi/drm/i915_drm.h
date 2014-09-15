@@ -947,6 +947,31 @@ struct drm_i915_gem_get_aperture {
 	 * bytes
 	 */
 	__u64 aper_available_size;
+
+	/**
+	 * Total size of the mappable region of the aperture, in bytes
+	 */
+	__u64 map_total_size;
+
+	/**
+	 * Available space in the mappable region of the aperture, in bytes
+	 */
+	__u64 map_available_size;
+
+	/**
+	 * Single largest available region inside the mappable region, in bytes.
+	 */
+	__u64 map_largest_size;
+
+	/**
+	 * Culmulative space available for fences, in bytes
+	 */
+	__u64 fence_available_size;
+
+	/**
+	 * Single largest fenceable region, in bytes.
+	 */
+	__u64 fence_largest_size;
 };
 
 struct drm_i915_get_pipe_from_crtc_id {
