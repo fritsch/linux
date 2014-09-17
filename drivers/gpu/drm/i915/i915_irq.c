@@ -254,8 +254,8 @@ static void snb_update_pm_irq(struct drm_i915_private *dev_priv,
 
 	if (new_val != dev_priv->pm_irq_mask) {
 		dev_priv->pm_irq_mask = new_val;
-		I915_WRITE(gen6_pm_imr(dev_priv), dev_priv->pm_irq_mask);
-		POSTING_READ(gen6_pm_imr(dev_priv));
+		__raw_i915_write32(dev_priv, gen6_pm_imr(dev_priv), dev_priv->pm_irq_mask);
+		__raw_i915_posting_read(dev_priv, gen6_pm_imr(dev_priv));
 	}
 }
 
@@ -319,8 +319,7 @@ void ibx_display_interrupt_update(struct drm_i915_private *dev_priv,
 	if (WARN_ON(!intel_irqs_enabled(dev_priv)))
 		return;
 
-	I915_WRITE(SDEIMR, sdeimr);
-	POSTING_READ(SDEIMR);
+	__raw_i915_write32(dev_priv, SDEIMR, sdeimr);
 }
 
 static void
@@ -1593,7 +1592,7 @@ static void hsw_pipe_crc_irq_handler(struct drm_device *dev, enum pipe pipe)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	display_pipe_crc_irq_handler(dev, pipe,
-				     I915_READ(PIPE_CRC_RES_1_IVB(pipe)),
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_1_IVB(pipe)),
 				     0, 0, 0, 0);
 }
 
@@ -1602,11 +1601,11 @@ static void ivb_pipe_crc_irq_handler(struct drm_device *dev, enum pipe pipe)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	display_pipe_crc_irq_handler(dev, pipe,
-				     I915_READ(PIPE_CRC_RES_1_IVB(pipe)),
-				     I915_READ(PIPE_CRC_RES_2_IVB(pipe)),
-				     I915_READ(PIPE_CRC_RES_3_IVB(pipe)),
-				     I915_READ(PIPE_CRC_RES_4_IVB(pipe)),
-				     I915_READ(PIPE_CRC_RES_5_IVB(pipe)));
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_1_IVB(pipe)),
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_2_IVB(pipe)),
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_3_IVB(pipe)),
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_4_IVB(pipe)),
+				     __raw_i915_read32(dev_priv, PIPE_CRC_RES_5_IVB(pipe)));
 }
 
 static void i9xx_pipe_crc_irq_handler(struct drm_device *dev, enum pipe pipe)
@@ -1642,9 +1641,17 @@ static void gen6_rps_irq_handler(struct drm_i915_private *dev_priv, u32 pm_iir)
 		return;
 
 	if (pm_iir & dev_priv->rps.pm_events) {
+		u32 events;
+
 		spin_lock(&dev_priv->irq_lock);
-		dev_priv->rps.pm_iir |= pm_iir & dev_priv->rps.pm_events;
-		gen6_disable_pm_irq(dev_priv, pm_iir & dev_priv->rps.pm_events);
+		events = pm_iir & dev_priv->rps.pm_events;
+		dev_priv->rps.pm_iir |= events;
+		if ((dev_priv->pm_irq_mask & events) != events) {
+			dev_priv->pm_irq_mask |= events;
+			__raw_i915_write32(dev_priv,
+					   GEN6_PMIMR,
+					   dev_priv->pm_irq_mask);
+		}
 		spin_unlock(&dev_priv->irq_lock);
 
 		queue_work(dev_priv->wq, &dev_priv->rps.work);
@@ -1963,8 +1970,8 @@ static void cpt_irq_handler(struct drm_device *dev, u32 pch_iir)
 	u32 hotplug_trigger = pch_iir & SDE_HOTPLUG_MASK_CPT;
 	u32 dig_hotplug_reg;
 
-	dig_hotplug_reg = I915_READ(PCH_PORT_HOTPLUG);
-	I915_WRITE(PCH_PORT_HOTPLUG, dig_hotplug_reg);
+	dig_hotplug_reg = __raw_i915_read32(dev_priv, PCH_PORT_HOTPLUG);
+	__raw_i915_write32(dev_priv, PCH_PORT_HOTPLUG, dig_hotplug_reg);
 
 	intel_hpd_irq_handler(dev, hotplug_trigger, dig_hotplug_reg, hpd_cpt);
 
@@ -2031,7 +2038,7 @@ static void ilk_display_irq_handler(struct drm_device *dev, u32 de_iir)
 
 	/* check event from PCH */
 	if (de_iir & DE_PCH_EVENT) {
-		u32 pch_iir = I915_READ(SDEIIR);
+		u32 pch_iir = __raw_i915_read32(dev_priv, SDEIIR);
 
 		if (HAS_PCH_CPT(dev))
 			cpt_irq_handler(dev, pch_iir);
@@ -2039,7 +2046,7 @@ static void ilk_display_irq_handler(struct drm_device *dev, u32 de_iir)
 			ibx_irq_handler(dev, pch_iir);
 
 		/* should clear PCH hotplug event before clear CPU irq */
-		I915_WRITE(SDEIIR, pch_iir);
+		__raw_i915_write32(dev_priv, SDEIIR, pch_iir);
 	}
 
 	if (IS_GEN5(dev) && de_iir & DE_PCU_EVENT)
@@ -2074,12 +2081,12 @@ static void ivb_display_irq_handler(struct drm_device *dev, u32 de_iir)
 
 	/* check event from PCH */
 	if (!HAS_PCH_NOP(dev) && (de_iir & DE_PCH_EVENT_IVB)) {
-		u32 pch_iir = I915_READ(SDEIIR);
+		u32 pch_iir = __raw_i915_read32(dev_priv, SDEIIR);
 
 		cpt_irq_handler(dev, pch_iir);
 
 		/* clear PCH hotplug event before clear CPU irq */
-		I915_WRITE(SDEIIR, pch_iir);
+		__raw_i915_write32(dev_priv, SDEIIR, pch_iir);
 	}
 }
 
