@@ -2880,9 +2880,9 @@ static void i915_hangcheck_elapsed(struct work_struct *work)
 		container_of(work, typeof(*dev_priv),
 			     gpu_error.hangcheck_work.work);
 	struct intel_engine_cs *engine;
-	int i;
-	int busy_count = 0, rings_hung = 0;
 	bool stuck[I915_NUM_ENGINES] = { 0 };
+	int busy_count = 0, hung = 0;
+	int i;
 #define BUSY 1
 #define KICK 5
 #define HUNG 20
@@ -2974,19 +2974,52 @@ static void i915_hangcheck_elapsed(struct work_struct *work)
 		engine->hangcheck.seqno = seqno;
 		engine->hangcheck.acthd = acthd;
 		busy_count += busy;
+
+		hung += engine->hangcheck.score >= HANGCHECK_SCORE_RING_HUNG;
 	}
 
-	for_each_engine(engine, dev_priv, i) {
-		if (engine->hangcheck.score >= HANGCHECK_SCORE_RING_HUNG) {
-			DRM_INFO("%s on %s\n",
-				 stuck[i] ? "stuck" : "no progress",
-				 engine->name);
-			rings_hung++;
+	if (hung) {
+		char msg[512];
+		int rings_stall, rings_stuck, len;
+
+		len = rings_stall = rings_stuck = 0;
+		for_each_engine(engine, dev_priv, i) {
+			if (engine->hangcheck.score >= HANGCHECK_SCORE_RING_HUNG &&
+			    stuck[i]) {
+				if (rings_stuck == 0)
+					len += snprintf(msg + len,
+							sizeof(msg)-len,
+							"Stuck on");
+				len += snprintf(msg + len, sizeof(msg)-len,
+						" %s,", engine->name);
+				rings_stuck++;
+			}
 		}
-	}
+		if (rings_stuck)
+			msg[--len] = '\0';
 
-	if (rings_hung)
-		return i915_handle_error(dev_priv->dev, true, "Ring hung");
+		for_each_engine(engine, dev_priv, i) {
+			if (engine->hangcheck.score >= HANGCHECK_SCORE_RING_HUNG &&
+			    !stuck[i]) {
+				if (rings_stall == 0) {
+					if (rings_stuck)
+						len += snprintf(msg + len,
+								sizeof(msg)-len,
+								"; ");
+					len += snprintf(msg + len,
+							sizeof(msg)-len,
+							"No progress on");
+				}
+				len += snprintf(msg + len, sizeof(msg)-len,
+						" %s,", engine->name);
+				rings_stall++;
+			}
+		}
+		if (rings_stall)
+			msg[--len] = '\0';
+
+		return i915_handle_error(dev_priv->dev, true, msg);
+	}
 
 	if (busy_count)
 		/* Reset timer case chip hangs without another request
