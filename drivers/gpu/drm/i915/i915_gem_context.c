@@ -130,7 +130,11 @@ static int get_context_size(struct drm_device *dev)
 		ret = GEN8_CXT_TOTAL_SIZE;
 		break;
 	default:
-		BUG();
+		WARN(1,
+		     "context size not known for gen %d\n",
+		     INTEL_INFO(dev)->gen);
+		ret = -1;
+		break;
 	}
 
 	return ret;
