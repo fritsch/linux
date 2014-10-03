@@ -90,7 +90,7 @@ struct intel_ringbuffer {
 
 	struct intel_engine_cs *engine;
 	struct intel_context *ctx;
-	struct list_head engine_list;
+	struct list_head engine_link;
 
 	struct drm_i915_gem_object *obj;
 	void __iomem *virtual_start;

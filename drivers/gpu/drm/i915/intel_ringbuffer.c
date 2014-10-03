@@ -210,7 +210,7 @@ gen6_render_emit_flush(struct i915_gem_request *rq, u32 flags)
 		 * Ensure that any following seqno writes only happen
 		 * when the render cache is indeed flushed.
 		 */
-		cmd |= PIPE_CONTROL_CS_STALL;
+		cmd |= PIPE_CONTROL_QW_WRITE | PIPE_CONTROL_CS_STALL;
 
 	if (cmd) {
 		ring = intel_ring_begin(rq, 4);
@@ -302,8 +302,7 @@ gen7_render_emit_flush(struct i915_gem_request *rq, u32 flags)
 		/*
 		 * TLB invalidate requires a post-sync write.
 		 */
-		cmd |= PIPE_CONTROL_QW_WRITE;
-		cmd |= PIPE_CONTROL_GLOBAL_GTT_IVB;
+		cmd |= PIPE_CONTROL_QW_WRITE | PIPE_CONTROL_GLOBAL_GTT_IVB;
 
 		/* Workaround: we must issue a pipe_control with CS-stall bit
 		 * set before a pipe_control command that has the state cache
@@ -311,6 +310,14 @@ gen7_render_emit_flush(struct i915_gem_request *rq, u32 flags)
 		ret = gen7_render_ring_cs_stall_wa(rq);
 		if (ret)
 			return ret;
+	}
+	if (flags & I915_COMMAND_BARRIER) {
+		/*
+		 * Ensure that any following seqno writes only happen
+		 * when the render cache is indeed flushed.
+		 */
+		cmd |= PIPE_CONTROL_QW_WRITE | PIPE_CONTROL_GLOBAL_GTT_IVB;
+		cmd |= PIPE_CONTROL_FLUSH_ENABLE;
 	}
 
 	ring = intel_ring_begin(rq, 4);
@@ -387,9 +394,11 @@ gen8_render_emit_flush(struct i915_gem_request *rq,
 			return ret;
 	}
 
-	if (flags & I915_COMMAND_BARRIER)
+	if (flags & I915_COMMAND_BARRIER) {
 		cmd |= PIPE_CONTROL_CS_STALL;
-
+		cmd |= PIPE_CONTROL_QW_WRITE;
+		cmd |= PIPE_CONTROL_GLOBAL_GTT_IVB;
+	}
 
 	ret = gen8_emit_pipe_control(rq, cmd, scratch_addr);
 	if (ret)
@@ -671,7 +680,7 @@ static void engine_put_ring(struct intel_ringbuffer *ring,
 static int engine_add_request(struct i915_gem_request *rq)
 {
 	rq->engine->write_tail(rq->engine, rq->tail);
-	list_add_tail(&rq->engine_list, &rq->engine->requests);
+	list_add_tail(&rq->engine_link, &rq->engine->requests);
 	return 0;
 }
 
@@ -695,7 +704,7 @@ init_broken_cs_tlb_wa(struct intel_engine_cs *engine)
 		return -ENOMEM;
 	}
 
-	ret = i915_gem_obj_ggtt_pin(obj, 0, 0);
+	ret = i915_gem_object_ggtt_pin(obj, 0, 0);
 	if (ret != 0) {
 		drm_gem_object_unreference(&obj->base);
 		DRM_ERROR("Failed to ping batch bo\n");
@@ -723,7 +732,7 @@ init_pipe_control(struct intel_engine_cs *engine)
 	if (ret)
 		goto err_unref;
 
-	ret = i915_gem_obj_ggtt_pin(engine->scratch.obj, 4096, 0);
+	ret = i915_gem_object_ggtt_pin(engine->scratch.obj, 4096, 0);
 	if (ret)
 		goto err_unref;
 
@@ -1422,7 +1431,7 @@ static int setup_status_page(struct intel_engine_cs *engine)
 		 * actualy map it).
 		 */
 		flags |= PIN_MAPPABLE;
-	ret = i915_gem_obj_ggtt_pin(obj, 4096, flags);
+	ret = i915_gem_object_ggtt_pin(obj, 4096, flags);
 	if (ret) {
 err_unref:
 		drm_gem_object_unreference(&obj->base);
@@ -1463,7 +1472,7 @@ void intel_ring_free(struct intel_ringbuffer *ring)
 		drm_gem_object_unreference(&ring->obj->base);
 	}
 
-	list_del(&ring->engine_list);
+	list_del(&ring->engine_link);
 	kfree(ring);
 }
 
@@ -1498,7 +1507,7 @@ intel_engine_alloc_ring(struct intel_engine_cs *engine,
 	/* mark ring buffers as read-only from GPU side by default */
 	obj->gt_ro = 1;
 
-	ret = i915_gem_obj_ggtt_pin(obj, PAGE_SIZE, PIN_MAPPABLE);
+	ret = i915_gem_object_ggtt_pin(obj, PAGE_SIZE, PIN_MAPPABLE);
 	if (ret) {
 		DRM_ERROR("failed pin ringbuffer into GGTT\n");
 		goto err_unref;
@@ -1535,7 +1544,7 @@ intel_engine_alloc_ring(struct intel_engine_cs *engine,
 
 	INIT_LIST_HEAD(&ring->requests);
 	INIT_LIST_HEAD(&ring->breadcrumbs);
-	list_add_tail(&ring->engine_list, &engine->rings);
+	list_add_tail(&ring->engine_link, &engine->rings);
 
 	return ring;
 
@@ -1844,7 +1853,7 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 				i915_module.semaphores = 0;
 			} else {
 				i915_gem_object_set_cache_level(obj, I915_CACHE_LLC);
-				ret = i915_gem_obj_ggtt_pin(obj, 0, PIN_NONBLOCK);
+				ret = i915_gem_object_ggtt_pin(obj, 0, PIN_NONBLOCK);
 				if (ret != 0) {
 					drm_gem_object_unreference(&obj->base);
 					DRM_ERROR("Failed to pin semaphore bo. Disabling semaphores\n");
@@ -2252,7 +2261,7 @@ intel_engine_seqno_to_request(struct intel_engine_cs *engine,
 {
 	struct i915_gem_request *rq;
 
-	list_for_each_entry(rq, &engine->requests, engine_list) {
+	list_for_each_entry(rq, &engine->requests, engine_link) {
 		if (rq->seqno == seqno)
 			return rq;
 
@@ -2275,7 +2284,7 @@ static void intel_engine_clear_rings(struct intel_engine_cs *engine)
 {
 	struct intel_ringbuffer *ring;
 
-	list_for_each_entry(ring, &engine->rings, engine_list) {
+	list_for_each_entry(ring, &engine->rings, engine_link) {
 		if (ring->retired_head != -1) {
 			ring->head = ring->retired_head;
 			ring->retired_head = -1;
@@ -2289,6 +2298,11 @@ static void intel_engine_clear_rings(struct intel_engine_cs *engine)
 			obj = ring->last_context->ring[engine->id].state;
 			if (obj)
 				i915_gem_object_ggtt_unpin(obj);
+
+			if (ring->last_context->ppgtt) {
+				obj = ring->last_context->ppgtt->state;
+				i915_gem_object_ggtt_unpin(obj);
+			}
 
 			ring->last_context = NULL;
 		}
@@ -2344,7 +2358,7 @@ int intel_engine_retire(struct intel_engine_cs *engine,
 
 		rq = list_first_entry(&engine->requests,
 				      struct i915_gem_request,
-				      engine_list);
+				      engine_link);
 
 		if (!__i915_seqno_passed(seqno, rq->seqno))
 			break;
@@ -2367,7 +2381,7 @@ find_active_batch(struct list_head *list)
 {
 	struct i915_gem_request *rq, *last = NULL;
 
-	list_for_each_entry(rq, list, engine_list) {
+	list_for_each_entry(rq, list, engine_link) {
 		if (rq->batch == NULL)
 			continue;
 
@@ -2424,7 +2438,7 @@ intel_engine_hangstats(struct intel_engine_cs *engine)
 	} else
 		hs->batch_pending++;
 
-	list_for_each_entry_continue(rq, &engine->requests, engine_list) {
+	list_for_each_entry_continue(rq, &engine->requests, engine_link) {
 		if (rq->batch == NULL)
 			continue;
 

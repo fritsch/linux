@@ -753,7 +753,7 @@ static u32 capture_pinned_bo(struct drm_i915_error_buffer *err,
 		if (err == last)
 			break;
 
-		list_for_each_entry(vma, &obj->vma_list, vma_link)
+		list_for_each_entry(vma, &obj->vma_list, obj_link)
 			if (vma->vm == vm && vma->pin_count > 0) {
 				capture_bo(err++, vma);
 				break;
@@ -1075,7 +1075,7 @@ static void i915_gem_record_rings(struct drm_device *dev,
 		i915_gem_record_active_context(engine, error, &error->ring[i]);
 
 		count = 0;
-		list_for_each_entry(rq, &engine->requests, engine_list)
+		list_for_each_entry(rq, &engine->requests, engine_link)
 			count++;
 
 		error->ring[i].num_requests = count;
@@ -1088,7 +1088,7 @@ static void i915_gem_record_rings(struct drm_device *dev,
 		}
 
 		count = 0;
-		list_for_each_entry(rq, &engine->requests, engine_list) {
+		list_for_each_entry(rq, &engine->requests, engine_link) {
 			struct drm_i915_error_request *erq;
 			struct task_struct *task;
 
@@ -1132,7 +1132,7 @@ static void i915_gem_capture_vm(struct drm_i915_private *dev_priv,
 	error->active_bo_count[ndx] = i;
 
 	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
-		list_for_each_entry(vma, &obj->vma_list, vma_link)
+		list_for_each_entry(vma, &obj->vma_list, obj_link)
 			if (vma->vm == vm && vma->pin_count > 0) {
 				i++;
 				break;

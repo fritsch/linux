@@ -93,7 +93,7 @@ static struct i915_vma *
 eb_get_batch(struct eb_vmas *eb)
 {
 	struct i915_vma *vma =
-		list_entry(eb->vmas.prev, typeof(*vma), exec_list);
+		list_entry(eb->vmas.prev, typeof(*vma), exec_link);
 
 	/*
 	 * SNA is doing fancy tricks with compressing batch buffers, which leads
@@ -172,7 +172,7 @@ eb_lookup_vmas(struct eb_vmas *eb,
 		}
 
 		/* Transfer ownership from the objects list to the vmas list. */
-		list_add_tail(&vma->exec_list, &eb->vmas);
+		list_add_tail(&vma->exec_link, &eb->vmas);
 		list_del_init(&obj->obj_exec_link);
 
 		vma->exec_entry = &exec[i];
@@ -231,13 +231,10 @@ static struct i915_vma *eb_get_vma(struct eb_vmas *eb, unsigned long handle)
 	}
 }
 
-void
+static void
 __i915_vma_unreserve(struct i915_vma *vma)
 {
 	struct drm_i915_gem_exec_object2 *entry = vma->exec_entry;
-
-	if (entry == NULL)
-		return;
 
 	if (entry->flags & __EXEC_OBJECT_HAS_FENCE)
 		i915_gem_object_unpin_fence(vma->obj);
@@ -246,23 +243,26 @@ __i915_vma_unreserve(struct i915_vma *vma)
 		vma->pin_count--;
 
 	entry->flags &= ~(__EXEC_OBJECT_HAS_FENCE | __EXEC_OBJECT_HAS_PIN);
+}
 
-	vma->exec_entry = NULL;
+void
+i915_vma_unreserve(struct i915_vma *vma)
+{
+	list_del_init(&vma->exec_link);
+	if (vma->exec_entry) {
+		__i915_vma_unreserve(vma);
+		vma->exec_entry = NULL;
+	}
+	drm_gem_object_unreference(&vma->obj->base);
+	i915_vma_put(vma);
 }
 
 static void eb_destroy(struct eb_vmas *eb)
 {
-	while (!list_empty(&eb->vmas)) {
-		struct i915_vma *vma;
-
-		vma = list_first_entry(&eb->vmas,
-				       struct i915_vma,
-				       exec_list);
-		list_del_init(&vma->exec_list);
-		__i915_vma_unreserve(vma);
-		drm_gem_object_unreference(&vma->obj->base);
-		i915_vma_put(vma);
-	}
+	while (!list_empty(&eb->vmas))
+		i915_vma_unreserve(list_first_entry(&eb->vmas,
+						    struct i915_vma,
+						    exec_link));
 	kfree(eb);
 }
 
@@ -356,6 +356,24 @@ relocate_entry_gtt(struct drm_i915_gem_object *obj,
 	return 0;
 }
 
+static bool obj_active(struct drm_i915_gem_object *obj)
+{
+	int i;
+
+	if (!obj->active)
+		return false;
+
+	for (i = 0; i < I915_NUM_ENGINES; i++) {
+		if (obj->last_read[i].request == NULL)
+			continue;
+
+		if (!i915_request_complete(obj->last_read[i].request))
+			return true;
+	}
+
+	return false;
+}
+
 static int
 i915_gem_execbuffer_relocate_entry(struct drm_i915_gem_object *obj,
 				   struct eb_vmas *eb,
@@ -381,10 +399,8 @@ i915_gem_execbuffer_relocate_entry(struct drm_i915_gem_object *obj,
 	 * pipe_control writes because the gpu doesn't properly redirect them
 	 * through the ppgtt for non_secure batchbuffers. */
 	if (unlikely(IS_GEN6(dev) &&
-	    reloc->write_domain == I915_GEM_DOMAIN_INSTRUCTION &&
-	    !(target_vma->bound & GLOBAL_BIND)))
-		target_vma->bind_vma(target_vma, target_i915_obj->cache_level,
-				GLOBAL_BIND);
+		     reloc->write_domain == I915_GEM_DOMAIN_INSTRUCTION))
+		target_vma->exec_entry->flags |= EXEC_OBJECT_NEEDS_GTT;
 
 	/* Validate that the target is in a valid r/w GPU domain */
 	if (unlikely(reloc->write_domain & (reloc->write_domain - 1))) {
@@ -437,7 +453,7 @@ i915_gem_execbuffer_relocate_entry(struct drm_i915_gem_object *obj,
 	}
 
 	/* We can't wait for rendering with pagefaults disabled */
-	if (obj->active && in_atomic())
+	if (in_atomic() && obj_active(obj))
 		return -EFAULT;
 
 	if (use_cpu_reloc(obj))
@@ -529,7 +545,7 @@ i915_gem_execbuffer_relocate(struct eb_vmas *eb)
 	 * lockdep complains vehemently.
 	 */
 	pagefault_disable();
-	list_for_each_entry(vma, &eb->vmas, exec_list) {
+	list_for_each_entry(vma, &eb->vmas, exec_link) {
 		ret = i915_gem_execbuffer_relocate_vma(vma, eb);
 		if (ret)
 			break;
@@ -549,7 +565,7 @@ i915_gem_execbuffer_reserve_vma(struct i915_vma *vma,
 	uint64_t flags;
 	int ret;
 
-	flags = 0;
+	flags = PIN_LOCAL;
 	if (entry->flags & __EXEC_OBJECT_NEEDS_MAP)
 		flags |= PIN_GLOBAL | PIN_MAPPABLE;
 	if (entry->flags & EXEC_OBJECT_NEEDS_GTT)
@@ -559,7 +575,7 @@ i915_gem_execbuffer_reserve_vma(struct i915_vma *vma,
 	if (entry->flags & EXEC_OBJECT_PINNED)
 		flags |= entry->offset | PIN_OFFSET_FIXED;
 
-	ret = i915_gem_object_pin(obj, vma->vm, entry->alignment, flags);
+	ret = i915_vma_pin(vma, entry->alignment, flags);
 	if (ret)
 		return ret;
 
@@ -649,14 +665,14 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 
 	i915_gem_retire_requests__engine(engine);
 
-	vm = list_first_entry(vmas, struct i915_vma, exec_list)->vm;
+	vm = list_first_entry(vmas, struct i915_vma, exec_link)->vm;
 
 	INIT_LIST_HEAD(&ordered_vmas);
 	while (!list_empty(vmas)) {
 		struct drm_i915_gem_exec_object2 *entry;
 		bool need_fence, need_mappable;
 
-		vma = list_first_entry(vmas, struct i915_vma, exec_list);
+		vma = list_first_entry(vmas, struct i915_vma, exec_link);
 		obj = vma->obj;
 		entry = vma->exec_entry;
 
@@ -669,9 +685,9 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 
 		if (need_mappable) {
 			entry->flags |= __EXEC_OBJECT_NEEDS_MAP;
-			list_move(&vma->exec_list, &ordered_vmas);
+			list_move(&vma->exec_link, &ordered_vmas);
 		} else
-			list_move_tail(&vma->exec_list, &ordered_vmas);
+			list_move_tail(&vma->exec_link, &ordered_vmas);
 
 		obj->base.pending_read_domains = I915_GEM_GPU_DOMAINS & ~I915_GEM_DOMAIN_COMMAND;
 		obj->base.pending_write_domain = 0;
@@ -695,7 +711,7 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 		int ret = 0;
 
 		/* Unbind any ill-fitting objects or pin. */
-		list_for_each_entry(vma, vmas, exec_list) {
+		list_for_each_entry(vma, vmas, exec_link) {
 			if (!drm_mm_node_allocated(&vma->node))
 				continue;
 
@@ -708,7 +724,7 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 		}
 
 		/* Bind fresh objects */
-		list_for_each_entry(vma, vmas, exec_list) {
+		list_for_each_entry(vma, vmas, exec_link) {
 			if (drm_mm_node_allocated(&vma->node))
 				continue;
 
@@ -722,7 +738,7 @@ err:
 			return ret;
 
 		/* Decrement pin count for bound objects */
-		list_for_each_entry(vma, vmas, exec_list)
+		list_for_each_entry(vma, vmas, exec_link)
 			__i915_vma_unreserve(vma);
 
 		ret = i915_gem_evict_vm(vm, true);
@@ -747,15 +763,12 @@ i915_gem_execbuffer_relocate_slow(struct drm_i915_private *i915,
 	int i, total, ret;
 	unsigned count = args->buffer_count;
 
-	vm = list_first_entry(&eb->vmas, struct i915_vma, exec_list)->vm;
+	vm = list_first_entry(&eb->vmas, struct i915_vma, exec_link)->vm;
 
 	/* We may process another execbuffer during the unlock... */
 	while (!list_empty(&eb->vmas)) {
-		vma = list_first_entry(&eb->vmas, struct i915_vma, exec_list);
-		list_del_init(&vma->exec_list);
-		__i915_vma_unreserve(vma);
-		drm_gem_object_unreference(&vma->obj->base);
-		i915_vma_put(vma);
+		vma = list_first_entry(&eb->vmas, struct i915_vma, exec_link);
+		i915_vma_unreserve(vma);
 	}
 
 	mutex_unlock(&i915->dev->struct_mutex);
@@ -828,7 +841,7 @@ i915_gem_execbuffer_relocate_slow(struct drm_i915_private *i915,
 	if (ret)
 		goto err;
 
-	list_for_each_entry(vma, &eb->vmas, exec_list) {
+	list_for_each_entry(vma, &eb->vmas, exec_link) {
 		int offset = vma->exec_entry - exec;
 		ret = i915_gem_execbuffer_relocate_vma_slow(vma, eb,
 							    reloc + reloc_offset[offset]);
@@ -858,7 +871,7 @@ vmas_move_to_rq(struct eb_vmas *eb,
 	int ret;
 
 	/* 1: flush/serialise damage from other sources */
-	list_for_each_entry(vma, &eb->vmas, exec_list) {
+	list_for_each_entry(vma, &eb->vmas, exec_link) {
 		struct drm_i915_gem_object *obj = vma->obj;
 
 		ret = i915_gem_object_sync(obj, rq);
@@ -888,7 +901,7 @@ vmas_move_to_rq(struct eb_vmas *eb,
 	while (!list_empty(&eb->vmas)) {
 		unsigned fenced;
 
-		vma = list_first_entry(&eb->vmas, typeof(*vma), exec_list);
+		vma = list_first_entry(&eb->vmas, typeof(*vma), exec_link);
 
 		fenced = 0;
 		if (vma->exec_entry->flags & EXEC_OBJECT_NEEDS_FENCE) {
@@ -1386,7 +1399,7 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 		 *   fitting due to fragmentation.
 		 * So this is actually safe.
 		 */
-		ret = i915_gem_obj_ggtt_pin(batch, 0, 0);
+		ret = i915_gem_object_ggtt_pin(batch, 0, 0);
 		if (ret)
 			goto err;
 

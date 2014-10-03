@@ -294,7 +294,7 @@ static void execlists_submit(struct intel_engine_cs *engine)
 
 		next = list_first_entry(&engine->pending,
 					typeof(*next),
-					engine_list);
+					engine_link);
 
 		if (rq[i] == NULL) {
 new_slot:
@@ -316,7 +316,7 @@ new_slot:
 		 * so that we can keep the main request list out of
 		 * the spinlock coverage.
 		 */
-		list_move_tail(&next->engine_list, &engine->submitted);
+		list_move_tail(&next->engine_link, &engine->submitted);
 	}
 
 	execlists_submit_pair(engine, rq);
@@ -537,7 +537,7 @@ execlists_get_ring(struct intel_engine_cs *engine,
 		return ERR_CAST(ctx_obj);
 	}
 
-	ret = i915_gem_obj_ggtt_pin(ctx_obj, GEN8_LR_CONTEXT_ALIGN, 0);
+	ret = i915_gem_object_ggtt_pin(ctx_obj, GEN8_LR_CONTEXT_ALIGN, 0);
 	if (ret) {
 		DRM_DEBUG_DRIVER("Pin LRC backing obj failed: %d\n", ret);
 		goto err_unref;
@@ -591,7 +591,7 @@ static int execlists_add_request(struct i915_gem_request *rq)
 
 	spin_lock_irqsave(&rq->engine->irqlock, flags);
 
-	list_add_tail(&rq->engine_list, &rq->engine->pending);
+	list_add_tail(&rq->engine_link, &rq->engine->pending);
 	if (rq->engine->execlists_submitted < 2)
 		execlists_submit(rq->engine);
 

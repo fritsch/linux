@@ -570,7 +570,7 @@ found:
 
 			list_for_each_entry_safe(vma, vma_next,
 						 &obj->vma_list,
-						 vma_link)
+						 obj_link)
 				if (i915_vma_unbind(vma))
 					break;
 

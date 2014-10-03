@@ -144,7 +144,7 @@ describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 		   obj->madv == I915_MADV_DONTNEED ? " purgeable" : "");
 	if (obj->base.name)
 		seq_printf(m, " (name: %d)", obj->base.name);
-	list_for_each_entry(vma, &obj->vma_list, vma_link)
+	list_for_each_entry(vma, &obj->vma_list, obj_link)
 		if (vma->pin_count > 0)
 			pin_count++;
 		seq_printf(m, " (pinned x %d)", pin_count);
@@ -152,7 +152,7 @@ describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 		seq_printf(m, " (display)");
 	if (obj->fence_reg != I915_FENCE_REG_NONE)
 		seq_printf(m, " (fence: %d)", obj->fence_reg);
-	list_for_each_entry(vma, &obj->vma_list, vma_link) {
+	list_for_each_entry(vma, &obj->vma_list, obj_link) {
 		if (!i915_is_ggtt(vma->vm))
 			seq_puts(m, " (pp");
 		else
@@ -324,7 +324,7 @@ static int per_file_stats(int id, void *ptr, void *data)
 		stats->shared += obj->base.size;
 
 	if (USES_FULL_PPGTT(obj->base.dev)) {
-		list_for_each_entry(vma, &obj->vma_list, vma_link) {
+		list_for_each_entry(vma, &obj->vma_list, obj_link) {
 			struct i915_hw_ppgtt *ppgtt;
 
 			if (!drm_mm_node_allocated(&vma->node))
@@ -581,7 +581,12 @@ static int i915_gem_gtt_info(struct seq_file *m, void *data)
 
 	total_obj_size = total_gtt_size = count = 0;
 	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
-		if (list == PINNED_LIST && !i915_gem_obj_is_pinned(obj))
+		struct i915_vma *vma = i915_gem_obj_to_ggtt(obj);
+
+		if (vma == NULL)
+			continue;
+
+		if (list == PINNED_LIST && vma->pin_count == 0)
 			continue;
 
 		list_add(&obj->obj_exec_link, &sorted);
@@ -702,7 +707,7 @@ static int i915_gem_request_info(struct seq_file *m, void *data)
 			continue;
 
 		seq_printf(m, "%s requests:\n", engine->name);
-		list_for_each_entry(rq, &engine->requests, engine_list) {
+		list_for_each_entry(rq, &engine->requests, engine_link) {
 			seq_printf(m, "    %d @ %d\n",
 				   rq->seqno,
 				   (int)(jiffies - rq->emitted_jiffies));
@@ -1884,7 +1889,7 @@ static int i915_dump_lrc(struct seq_file *m, void *unused)
 	for_each_engine(engine, to_i915(dev), i) {
 		struct intel_ringbuffer *ring;
 
-		list_for_each_entry(ring, &engine->rings, engine_list) {
+		list_for_each_entry(ring, &engine->rings, engine_link) {
 			struct intel_context *ctx = ring->ctx;
 			struct task_struct *task;
 
@@ -1985,7 +1990,7 @@ static int i915_execlists(struct seq_file *m, void *data)
 		spin_lock_irqsave(&engine->irqlock, flags);
 		list_for_each(cursor, &engine->pending)
 			count++;
-		rq = list_first_entry_or_null(&engine->pending, typeof(*rq), engine_list);
+		rq = list_first_entry_or_null(&engine->pending, typeof(*rq), engine_link);
 		spin_unlock_irqrestore(&engine->irqlock, flags);
 
 		seq_printf(m, "\t%d requests in queue\n", count);
@@ -2152,7 +2157,8 @@ static void gen6_ppgtt_info(struct seq_file *m, struct drm_device *dev)
 		struct i915_hw_ppgtt *ppgtt = dev_priv->mm.aliasing_ppgtt;
 
 		seq_puts(m, "aliasing PPGTT:\n");
-		seq_printf(m, "pd gtt offset: 0x%08x\n", ppgtt->pd_offset);
+		seq_printf(m, "pd gtt offset: 0x%08llx\n",
+			   (long long)i915_gem_obj_to_ggtt(ppgtt->state)->node.start);
 
 		ppgtt->debug_dump(ppgtt, m);
 	}

@@ -124,19 +124,15 @@ struct i915_vma {
 	struct drm_i915_gem_object *obj;
 	struct i915_address_space *vm;
 
-	/** Flags and address space this VMA is bound to */
-#define GLOBAL_BIND	(1<<0)
-#define LOCAL_BIND	(1<<1)
-#define PTE_READ_ONLY	(1<<2)
-	unsigned int bound : 4;
+	struct list_head vm_link;
 
 	/** This object's place on the active/inactive lists */
 	struct list_head mm_list;
 
-	struct list_head vma_link; /* Link in the object's VMA list */
+	struct list_head obj_link; /* Link in the object's VMA list */
 
 	/** This vma's place in the batchbuffer or on the eviction list */
-	struct list_head exec_list;
+	struct list_head exec_link;
 
 	/**
 	 * Used for performing relocations during execbuffer insertion.
@@ -162,6 +158,12 @@ struct i915_vma {
 	 * bits with absolutely no headroom. So use 4 bits. */
 	unsigned int pin_count:4;
 #define DRM_I915_GEM_OBJECT_MAX_PIN_COUNT 0xf
+	/** Flags and address space this VMA is bound to */
+	unsigned int bound:4;
+#define LOCAL_BIND	(1<<0)
+#define GLOBAL_BIND	(1<<1)
+#define PTE_READ_ONLY	(1<<2)
+#define REBIND		(1<<3)
 	unsigned int active:I915_NUM_ENGINE_BITS;
 	unsigned int exec_read:1;
 	unsigned int exec_write:1;
@@ -169,11 +171,11 @@ struct i915_vma {
 
 	/** Unmap an object from an address space. This usually consists of
 	 * setting the valid PTE entries to a reserved scratch page. */
-	void (*unbind_vma)(struct i915_vma *vma);
+	int (*unbind_vma)(struct i915_vma *vma);
 	/* Map an object into an address space with the given cache flags. */
-	void (*bind_vma)(struct i915_vma *vma,
-			 enum i915_cache_level cache_level,
-			 u32 flags);
+	int (*bind_vma)(struct i915_vma *vma,
+			enum i915_cache_level cache_level,
+			unsigned flags);
 };
 
 struct i915_address_space {
@@ -185,11 +187,17 @@ struct i915_address_space {
 	size_t total;		/* size addr space maps (ex. 2GB for ggtt) */
 
 	bool dirty;
+	bool closed;
 
 	struct {
 		dma_addr_t addr;
 		struct page *page;
 	} scratch;
+
+	/**
+	 * List of all allocated vma.
+	 */
+	struct list_head vma_list;
 
 	/**
 	 * List of objects currently involved in rendering.
@@ -218,14 +226,15 @@ struct i915_address_space {
 	gen6_gtt_pte_t (*pte_encode)(dma_addr_t addr,
 				     enum i915_cache_level level,
 				     bool valid, u32 flags); /* Create a valid PTE */
-	void (*clear_range)(struct i915_address_space *vm,
-			    uint64_t start,
-			    uint64_t length,
-			    bool use_scratch);
-	void (*insert_entries)(struct i915_address_space *vm,
-			       struct sg_table *st,
-			       uint64_t start,
-			       enum i915_cache_level cache_level, u32 flags);
+	int (*clear_range)(struct i915_address_space *vm,
+			   uint64_t start,
+			   uint64_t length,
+			   bool use_scratch);
+	int (*insert_entries)(struct i915_address_space *vm,
+			      struct sg_table *st,
+			      uint64_t start,
+			      enum i915_cache_level cache_level,
+			      u32 flags);
 	void (*cleanup)(struct i915_address_space *vm);
 };
 
@@ -259,20 +268,18 @@ struct i915_gtt {
 
 struct i915_hw_ppgtt {
 	struct i915_address_space base;
-	struct drm_mm_node node;
+	struct drm_i915_gem_object *state;
+	unsigned alignment;
 	unsigned num_pd_entries;
 	unsigned num_pd_pages; /* gen8+ */
 	union {
-		struct page **pt_pages;
 		struct page **gen8_pt_pages[GEN8_LEGACY_PDPS];
 	};
 	struct page *pd_pages;
 	union {
-		uint32_t pd_offset;
 		dma_addr_t pd_dma_addr[GEN8_LEGACY_PDPS];
 	};
 	union {
-		dma_addr_t *pt_dma_addr;
 		dma_addr_t *gen8_pt_dma_addr[4];
 	};
 

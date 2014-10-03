@@ -3551,6 +3551,9 @@ void intel_crtc_wait_for_pending_flips(struct drm_crtc *crtc)
 	struct drm_device *dev = crtc->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
+	/* Kick hangcheck before waiting upon GPU results */
+	i915_queue_hangcheck(dev);
+
 	WARN_ON(waitqueue_active(&dev_priv->pending_flip_queue));
 	if (WARN_ON(wait_event_timeout(dev_priv->pending_flip_queue,
 				       !intel_crtc_has_pending_flip(crtc),
@@ -9786,6 +9789,10 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 
 		work->gtt_offset =
 			i915_gem_obj_ggtt_offset(obj) + intel_crtc->dspaddr_offset;
+
+		ret = i915_request_emit_flush(rq, I915_FLUSH_CACHES);
+		if (ret)
+			goto cleanup_unpin;
 
 		ret = dev_priv->display.queue_flip(rq, intel_crtc, fb, obj,
 						   page_flip_flags);

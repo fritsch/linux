@@ -44,7 +44,6 @@ i915_request_add_vma(struct i915_gem_request *rq,
 	u32 old_write = obj->base.write_domain;
 
 	lockdep_assert_held(&rq->i915->dev->struct_mutex);
-	BUG_ON(!drm_mm_node_allocated(&vma->node));
 
 	obj->base.write_domain = obj->base.pending_write_domain;
 	if (obj->base.write_domain == 0)
@@ -55,7 +54,7 @@ i915_request_add_vma(struct i915_gem_request *rq,
 	obj->base.pending_write_domain = 0;
 
 	trace_i915_gem_object_change_domain(obj, old_read, old_write);
-	list_move_tail(&vma->exec_list, &rq->vmas);
+	list_move_tail(&vma->exec_link, &rq->vmas);
 
 	if (obj->base.read_domains) {
 		vma->exec_read = 1;
@@ -225,8 +224,10 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 	if (!vma->exec_read)
 		return;
 
-	if (vma->last_read[engine->id].request == NULL && vma->active++ == 0)
+	if (vma->last_read[engine->id].request == NULL && vma->active++ == 0) {
+		drm_gem_object_reference(&obj->base);
 		i915_vma_get(vma);
+	}
 
 	i915_request_put(vma->last_read[engine->id].request);
 	vma->last_read[engine->id].request = i915_request_get(rq);
@@ -242,7 +243,7 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 		obj->dirty = 1;
 		i915_request_put(obj->last_write.request);
 		obj->last_write.request = i915_request_get(rq);
-		list_move_tail(&obj->last_write.engine_list,
+		list_move_tail(&obj->last_write.engine_link,
 			       &engine->write_list);
 
 		if (obj->active > 1) {
@@ -252,7 +253,7 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 				if (obj->last_read[i].request == NULL)
 					continue;
 
-				list_del_init(&obj->last_read[i].engine_list);
+				list_del_init(&obj->last_read[i].engine_link);
 				i915_request_put(obj->last_read[i].request);
 				obj->last_read[i].request = NULL;
 			}
@@ -264,7 +265,7 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 	if (vma->exec_fence & VMA_IS_FENCED) {
 		i915_request_put(obj->last_fence.request);
 		obj->last_fence.request = i915_request_get(rq);
-		list_move_tail(&obj->last_fence.engine_list,
+		list_move_tail(&obj->last_fence.engine_link,
 			       &engine->fence_list);
 		if (vma->exec_fence & VMA_HAS_FENCE)
 			list_move_tail(&rq->i915->fence_regs[obj->fence_reg].lru_list,
@@ -273,19 +274,10 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 
 	i915_request_put(obj->last_read[engine->id].request);
 	obj->last_read[engine->id].request = i915_request_get(rq);
-	list_move_tail(&obj->last_read[engine->id].engine_list,
+	list_move_tail(&obj->last_read[engine->id].engine_link,
 		       &engine->read_list);
 
 	list_move_tail(&vma->mm_list, &vma->vm->active_list);
-	BUG_ON(obj->active == 0);
-}
-
-static void vma_free(struct i915_vma *vma)
-{
-	list_del_init(&vma->exec_list);
-	__i915_vma_unreserve(vma);
-	drm_gem_object_unreference(&vma->obj->base);
-	i915_vma_put(vma);
 }
 
 static bool leave_breadcrumb(struct i915_gem_request *rq)
@@ -374,16 +366,17 @@ int i915_request_commit(struct i915_gem_request *rq)
 
 	if (rq->batch) {
 		add_to_client(rq);
-		while (!list_empty(&rq->vmas)) {
-			struct i915_vma *vma =
-				list_first_entry(&rq->vmas,
-						 typeof(*vma),
-						 exec_list);
-
-			add_to_obj(rq, vma);
-			vma_free(vma);
-		}
 		rq->batch->vm->dirty = false;
+	}
+
+	while (!list_empty(&rq->vmas)) {
+		struct i915_vma *vma =
+			list_first_entry(&rq->vmas,
+					 typeof(*vma),
+					 exec_link);
+
+		add_to_obj(rq, vma);
+		i915_vma_unreserve(vma);
 	}
 
 	i915_request_switch_context__commit(rq);
@@ -421,13 +414,15 @@ bool __i915_request_complete__wa(struct i915_gem_request *rq)
 	 * just assume that if the RING_HEAD has reached the tail, then
 	 * the request is complete. However, note that the RING_HEAD
 	 * advances before the instruction completes, so this is quite lax,
-	 * and should only be used carefully.
+	 * and should only be used carefully. To compensate, we only treat
+	 * it as completed if the request flushed.
 	 *
 	 * As we treat this as only an advisory completion, we forgo
 	 * marking the request as actually complete.
 	 */
 	head = __intel_ring_space(I915_READ_HEAD(rq->engine) & HEAD_ADDR,
-				  rq->ring->tail, rq->ring->size, 0);
+				  rq->ring->tail, rq->ring->size,
+				  rq->pending_flush & I915_COMMAND_BARRIER ? 8 : 0);
 	tail = __intel_ring_space(rq->tail,
 				  rq->ring->tail, rq->ring->size, 0);
 	return head >= tail;
@@ -540,6 +535,9 @@ i915_request_get_breadcrumb(struct i915_gem_request *rq)
 	u32 seqno;
 	int ret;
 
+	if (i915_request_complete(rq))
+		return i915_request_get(rq);
+
 	/* Writes are only coherent from the cpu (in the general case) when
 	 * the interrupt following the write to memory is complete. That is
 	 * when the breadcrumb after the write request is complete.
@@ -617,7 +615,7 @@ i915_request_retire(struct i915_gem_request *rq)
 	spin_lock(&rq->engine->lock);
 	if (rq->engine->last_request == rq)
 		rq->engine->last_request = NULL;
-	list_del(&rq->engine_list);
+	list_del(&rq->engine_link);
 	spin_unlock(&rq->engine->lock);
 
 	list_del(&rq->breadcrumb_link);
@@ -643,9 +641,9 @@ __i915_request_free(struct kref *kref)
 	}
 
 	while (!list_empty(&rq->vmas))
-		vma_free(list_first_entry(&rq->vmas,
-					  struct i915_vma,
-					  exec_list));
+		i915_vma_unreserve(list_first_entry(&rq->vmas,
+						    struct i915_vma,
+						    exec_link));
 
 	i915_request_switch_context__undo(rq);
 	i915_gem_context_unreference(rq->ctx);

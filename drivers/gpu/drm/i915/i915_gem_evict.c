@@ -39,10 +39,10 @@ mark_free(struct i915_vma *vma, struct list_head *unwind)
 	if (vma->pin_count)
 		return false;
 
-	if (WARN_ON(!list_empty(&vma->exec_list)))
+	if (WARN_ON(!list_empty(&vma->exec_link)))
 		return false;
 
-	list_add(&vma->exec_list, unwind);
+	list_add(&vma->exec_link, unwind);
 	return drm_mm_scan_add_block(&vma->node);
 }
 
@@ -130,11 +130,11 @@ none:
 	while (!list_empty(&unwind_list)) {
 		vma = list_first_entry(&unwind_list,
 				       struct i915_vma,
-				       exec_list);
+				       exec_link);
 		ret = drm_mm_scan_remove_block(&vma->node);
 		BUG_ON(ret);
 
-		list_del_init(&vma->exec_list);
+		list_del_init(&vma->exec_link);
 	}
 
 	/* Can we unpin some objects such as idle hw contents,
@@ -167,28 +167,25 @@ found:
 	while (!list_empty(&unwind_list)) {
 		vma = list_first_entry(&unwind_list,
 				       struct i915_vma,
-				       exec_list);
-		if (drm_mm_scan_remove_block(&vma->node)) {
-			list_move(&vma->exec_list, &eviction_list);
-			drm_gem_object_reference(&vma->obj->base);
-			continue;
-		}
-		list_del_init(&vma->exec_list);
+				       exec_link);
+		list_del_init(&vma->exec_link);
+
+		if (drm_mm_scan_remove_block(&vma->node))
+			list_add(&i915_vma_get(vma)->exec_link,
+				  &eviction_list);
 	}
 
 	/* Unbinding will emit any required flushes */
 	while (!list_empty(&eviction_list)) {
-		struct drm_gem_object *obj;
 		vma = list_first_entry(&eviction_list,
 				       struct i915_vma,
-				       exec_list);
+				       exec_link);
+		list_del_init(&vma->exec_link);
 
-		obj =  &vma->obj->base;
-		list_del_init(&vma->exec_list);
 		if (ret == 0)
 			ret = i915_vma_unbind(vma);
 
-		drm_gem_object_unreference(obj);
+		i915_vma_put(vma);
 	}
 
 	return ret;
@@ -217,13 +214,13 @@ i915_gem_evict_range(struct drm_device *dev, struct i915_address_space *vm,
 			break;
 		}
 
-		if (WARN_ON(!list_empty(&vma->exec_list))) {
+		if (WARN_ON(!list_empty(&vma->exec_link))) {
 			ret = -EINVAL;
 			break;
 		}
 
 		drm_gem_object_reference(&vma->obj->base);
-		list_add(&vma->exec_list, &eviction_list);
+		list_add(&vma->exec_link, &eviction_list);
 	}
 
 	while (!list_empty(&eviction_list)) {
@@ -232,11 +229,11 @@ i915_gem_evict_range(struct drm_device *dev, struct i915_address_space *vm,
 
 		vma = list_first_entry(&eviction_list,
 				       struct i915_vma,
-				       exec_list);
+				       exec_link);
 
 		obj = &vma->obj->base;
 
-		list_del_init(&vma->exec_list);
+		list_del_init(&vma->exec_link);
 		if (ret == 0)
 			ret = i915_vma_unbind(vma);
 

@@ -1953,6 +1953,12 @@ struct drm_i915_gem_object {
 
 	unsigned int has_dma_mapping:1;
 
+	/**
+	 * This is set if the object is a special page directory used
+	 * for ppGTT.
+	 */
+	unsigned int pde:1;
+
 	unsigned int frontbuffer_bits:INTEL_FRONTBUFFER_BITS;
 
 	struct sg_table *pages;
@@ -1965,7 +1971,7 @@ struct drm_i915_gem_object {
 	/** Breadcrumbs of last rendering to the buffer. */
 	struct {
 		struct i915_gem_request *request;
-		struct list_head engine_list;
+		struct list_head engine_link;
 	} last_write, last_read[I915_NUM_ENGINES], last_fence;
 
 	/** Current tiling stride for the object, if it's tiled. */
@@ -2451,19 +2457,18 @@ struct drm_i915_gem_object *i915_gem_alloc_object(struct drm_device *dev,
 void i915_init_vm(struct drm_i915_private *dev_priv,
 		  struct i915_address_space *vm);
 void i915_gem_free_object(struct drm_gem_object *obj);
-void i915_gem_vma_destroy(struct i915_vma *vma);
-void __i915_vma_unreserve(struct i915_vma *vma);
+void i915_vma_unreserve(struct i915_vma *vma);
 
 #define PIN_OFFSET_FIXED 0x1
 #define PIN_OFFSET_BIAS 0x2
-#define PIN_GLOBAL 0x4
-#define PIN_MAPPABLE 0x8
-#define PIN_NONBLOCK 0x10
+#define PIN_LOCAL 0x4
+#define PIN_GLOBAL 0x8
+#define PIN_MAPPABLE 0x10
+#define PIN_NONBLOCK 0x20
 #define PIN_OFFSET_MASK (~4095)
-int __must_check i915_gem_object_pin(struct drm_i915_gem_object *obj,
-				     struct i915_address_space *vm,
-				     uint32_t alignment,
-				     uint64_t flags);
+int __must_check i915_vma_pin(struct i915_vma *vma,
+			      uint32_t alignment,
+			      uint64_t flags);
 int __must_check i915_vma_unbind(struct i915_vma *vma);
 int i915_gem_object_put_pages(struct drm_i915_gem_object *obj);
 void i915_gem_release_all_mmaps(struct drm_i915_private *dev_priv);
@@ -2612,16 +2617,9 @@ struct i915_vma *
 i915_gem_obj_get_vma(struct drm_i915_gem_object *obj,
 		     struct i915_address_space *vm);
 
-struct i915_vma *i915_gem_obj_to_ggtt(struct drm_i915_gem_object *obj);
-static inline struct i915_vma *
-i915_gem_obj_get_ggtt(struct drm_i915_gem_object *obj)
-{
-	return i915_vma_get(i915_gem_obj_to_ggtt(obj));
-}
-
 static inline bool i915_gem_obj_is_pinned(struct drm_i915_gem_object *obj) {
 	struct i915_vma *vma;
-	list_for_each_entry(vma, &obj->vma_list, vma_link)
+	list_for_each_entry(vma, &obj->vma_list, obj_link)
 		if (vma->pin_count > 0)
 			return true;
 	return false;
@@ -2633,6 +2631,14 @@ static inline bool i915_is_ggtt(struct i915_address_space *vm)
 {
 	return vm == &to_i915(vm->dev)->gtt.base;
 }
+
+struct i915_vma *i915_gem_obj_to_ggtt(struct drm_i915_gem_object *obj);
+static inline struct i915_vma *
+i915_gem_obj_get_ggtt(struct drm_i915_gem_object *obj)
+{
+	return i915_gem_obj_get_vma(obj, i915_obj_to_ggtt(obj));
+}
+
 
 static inline struct i915_hw_ppgtt *
 i915_vm_to_ppgtt(struct i915_address_space *vm)
@@ -2660,22 +2666,11 @@ i915_gem_obj_ggtt_size(struct drm_i915_gem_object *obj)
 	return i915_gem_obj_size(obj, i915_obj_to_ggtt(obj));
 }
 
-static inline int __must_check
-i915_gem_obj_ggtt_pin(struct drm_i915_gem_object *obj,
-		      uint32_t alignment,
-		      unsigned flags)
-{
-	return i915_gem_object_pin(obj, i915_obj_to_ggtt(obj),
-				   alignment, flags | PIN_GLOBAL);
-}
-
-static inline int
-i915_gem_object_ggtt_unbind(struct drm_i915_gem_object *obj)
-{
-	return i915_vma_unbind(i915_gem_obj_to_ggtt(obj));
-}
-
+int __must_check i915_gem_object_ggtt_pin(struct drm_i915_gem_object *obj,
+					  uint32_t alignment,
+					  unsigned flags);
 void i915_gem_object_ggtt_unpin(struct drm_i915_gem_object *obj);
+void i915_gem_object_finish_gtt(struct drm_i915_gem_object *obj);
 
 /* i915_gem_context.c */
 int __must_check i915_gem_context_init(struct drm_device *dev);
@@ -2688,7 +2683,7 @@ void i915_request_switch_context__commit(struct i915_gem_request *rq);
 void i915_request_switch_context__undo(struct i915_gem_request *rq);
 struct intel_context *
 i915_gem_context_get(struct drm_i915_file_private *file_priv, u32 id);
-void i915_gem_context_free(struct kref *ctx_ref);
+void __i915_gem_context_free(struct kref *ctx_ref);
 struct drm_i915_gem_object *
 i915_gem_alloc_context_obj(struct drm_device *dev, size_t size);
 static inline void i915_gem_context_reference(struct intel_context *ctx)
@@ -2698,7 +2693,7 @@ static inline void i915_gem_context_reference(struct intel_context *ctx)
 
 static inline void i915_gem_context_unreference(struct intel_context *ctx)
 {
-	kref_put(&ctx->ref, i915_gem_context_free);
+	kref_put(&ctx->ref, __i915_gem_context_free);
 }
 
 static inline bool i915_gem_context_is_default(const struct intel_context *c)
@@ -2779,7 +2774,7 @@ struct i915_gem_request {
 	unsigned long emitted_jiffies;
 
 	/** global list entry for this request */
-	struct list_head engine_list;
+	struct list_head engine_link;
 	struct list_head breadcrumb_link;
 
 	struct drm_i915_file_private *file_priv;

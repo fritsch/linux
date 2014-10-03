@@ -68,7 +68,7 @@ static int render_state_init(struct render_state *so, struct i915_gem_request *r
 	if (so->obj == NULL)
 		return -ENOMEM;
 
-	ret = i915_gem_obj_ggtt_pin(so->obj, 4096, 0);
+	ret = i915_gem_object_ggtt_pin(so->obj, 4096, 0);
 	if (ret)
 		goto free_gem;
 

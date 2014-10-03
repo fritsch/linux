@@ -140,24 +140,24 @@ static int get_context_size(struct drm_device *dev)
 	return ret;
 }
 
-void i915_gem_context_free(struct kref *ctx_ref)
+void __i915_gem_context_free(struct kref *ctx_ref)
 {
 	struct intel_context *ctx =
 		container_of(ctx_ref, typeof(*ctx), ref);
-	struct drm_i915_private *dev_priv = ctx->i915;
 	int i;
 
-	i915_vm_put(&ctx->ppgtt->base);
+	DRM_DEBUG_DRIVER("HW context %d freed\n", ctx->user_handle);
 
 	trace_i915_context_free(ctx);
 	for (i = 0; i < I915_NUM_ENGINES; i++) {
-		if (intel_engine_initialized(&dev_priv->engine[i]) &&
-		    ctx->ring[i].ring != NULL)
-			dev_priv->engine[i].put_ring(ctx->ring[i].ring, ctx);
+		if (ctx->ring[i].ring != NULL)
+			ctx->ring[i].ring->engine->put_ring(ctx->ring[i].ring, ctx);
 
 		if (ctx->ring[i].state != NULL)
 			drm_gem_object_unreference(&ctx->ring[i].state->base);
 	}
+
+	i915_vm_put(&ctx->ppgtt->base);
 
 	list_del(&ctx->link);
 	kfree(ctx);
@@ -247,6 +247,7 @@ i915_gem_create_context(struct drm_device *dev,
 		if (IS_ERR_OR_NULL(ppgtt)) {
 			DRM_DEBUG_DRIVER("PPGTT setup failed (%ld)\n",
 					 PTR_ERR(ppgtt));
+			idr_remove(&file_priv->context_idr, ctx->user_handle);
 			ret = PTR_ERR(ppgtt);
 			goto err;
 		}
@@ -302,10 +303,24 @@ int i915_gem_context_init(struct drm_device *dev)
 		 * be available. To avoid this we always pin the default
 		 * context.
 		 */
-		ret = i915_gem_obj_ggtt_pin(ctx->ring[RCS].state,
-					    get_context_alignment(dev_priv), 0);
+		ret = i915_gem_object_ggtt_pin(ctx->ring[RCS].state,
+					       get_context_alignment(dev_priv),
+					       0);
 		if (ret) {
 			DRM_ERROR("Failed to pin global default context\n");
+			i915_gem_context_unreference(ctx);
+			return ret;
+		}
+	}
+
+	if (ctx->ppgtt) {
+		ret = i915_gem_object_ggtt_pin(ctx->ppgtt->state,
+					       ctx->ppgtt->alignment,
+					       0);
+		if (ret) {
+			DRM_ERROR("Failed to pin global default ppgtt\n");
+			if (dev_priv->hw_context_size)
+				i915_gem_object_ggtt_unpin(ctx->ring[RCS].state);
 			i915_gem_context_unreference(ctx);
 			return ret;
 		}
@@ -347,9 +362,15 @@ void i915_gem_context_fini(struct drm_device *dev)
 	}
 
 	if (dev_priv->default_context) {
+		struct intel_context *ctx = dev_priv->default_context;
+
 		if (dev_priv->hw_context_size)
-			i915_gem_object_ggtt_unpin(dev_priv->default_context->ring[RCS].state);
-		i915_gem_context_unreference(dev_priv->default_context);
+			i915_gem_object_ggtt_unpin(ctx->ring[RCS].state);
+
+		if (ctx->ppgtt)
+			i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
+
+		i915_gem_context_unreference(ctx);
 		dev_priv->default_context = NULL;
 	}
 }
@@ -396,6 +417,38 @@ err:
 static int context_idr_cleanup(int id, void *p, void *data)
 {
 	struct intel_context *ctx = p;
+
+	if (ctx->ppgtt) {
+		struct list_head *list;
+		struct i915_vma *vma;
+
+		/* Decouple the remaining vma to keep the next lookup fast */
+		list = &ctx->ppgtt->base.vma_list;
+		while (!list_empty(list)) {
+			vma = list_first_entry(list, typeof(*vma), vm_link);
+			list_del_init(&vma->vm_link);
+			list_del_init(&vma->obj_link);
+		}
+
+		/* Drop active references to this vm upon retire */
+		ctx->ppgtt->base.closed = true;
+
+		/* Drop all inactive references (via vma->vm reference) */
+		list = &ctx->ppgtt->base.inactive_list;
+		while (!list_empty(list)) {
+			struct drm_i915_gem_object *obj;
+			int ret;
+
+			vma = list_first_entry(list, typeof(*vma), mm_list);
+			obj = vma->obj;
+
+			drm_gem_object_reference(&obj->base);
+			ret = i915_vma_unbind(vma);
+			drm_gem_object_unreference(&obj->base);
+			if (WARN_ON(ret))
+				break;
+		}
+	}
 
 	ctx->file_priv = NULL;
 	i915_gem_context_unreference(ctx);
@@ -457,6 +510,11 @@ mi_set_context(struct i915_gem_request *rq,
 	 */
 	if (IS_GEN6(rq->i915))
 		rq->pending_flush |= I915_INVALIDATE_CACHES;
+	if ((flags & MI_RESTORE_INHIBIT) == 0) {
+		int ret = i915_request_emit_flush(rq, I915_COMMAND_BARRIER);
+		if (ret)
+			return ret;
+	}
 
 	len = 3;
 	switch (INTEL_INFO(rq->i915)->gen) {
@@ -561,8 +619,9 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 
 	if (ctx->state != NULL) {
 		/* Trying to pin first makes error handling easier. */
-		ret = i915_gem_obj_ggtt_pin(ctx->state,
-					    get_context_alignment(rq->i915), 0);
+		ret = i915_gem_object_ggtt_pin(ctx->state,
+					       get_context_alignment(rq->i915),
+					       0);
 		if (ret)
 			return ret;
 
@@ -576,7 +635,15 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 		 */
 		ret = i915_gem_object_set_to_gtt_domain(ctx->state, false);
 		if (ret)
-			goto unpin_out;
+			goto unpin_ctx;
+	}
+
+	if (to->ppgtt) {
+		ret = i915_gem_object_ggtt_pin(to->ppgtt->state,
+					       to->ppgtt->alignment,
+					       0);
+		if (ret)
+			goto unpin_ctx;
 	}
 
 	/* With execlists enabled, the ring, vm and logical state are
@@ -604,7 +671,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 			trace_i915_gem_ring_switch_context(rq->engine, to, flags);
 			ret = mi_set_context(rq, ctx, flags);
 			if (ret)
-				goto unpin_out;
+				goto unpin_mm;
 
 			rq->pending_flush &= ~I915_COMMAND_BARRIER;
 		}
@@ -613,7 +680,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 			trace_i915_gem_request_switch_mm(rq);
 			ret = to->ppgtt->switch_mm(rq, to->ppgtt);
 			if (ret)
-				goto unpin_out;
+				goto unpin_mm;
 		}
 	}
 
@@ -657,10 +724,22 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 		from_obj->dirty = 1;
 	}
 
+	if (from && from->ppgtt) {
+		struct drm_i915_gem_object *from_obj = from->ppgtt->state;
+
+		from_obj->base.pending_read_domains = I915_GEM_DOMAIN_INSTRUCTION;
+		/* obj is kept alive until the next request by its active ref */
+		drm_gem_object_reference(&from_obj->base);
+		i915_request_add_vma(rq, i915_gem_obj_get_ggtt(from_obj), 0);
+	}
+
 	rq->has_ctx_switch = true;
 	return 0;
 
-unpin_out:
+unpin_mm:
+	if (to->ppgtt)
+		i915_gem_object_ggtt_unpin(to->ppgtt->state);
+unpin_ctx:
 	if (ctx->state)
 		i915_gem_object_ggtt_unpin(ctx->state);
 	return ret;
@@ -680,6 +759,8 @@ void i915_request_switch_context__commit(struct i915_gem_request *rq)
 		return;
 
 	ctx = rq->ring->last_context;
+	if (ctx && ctx->ppgtt)
+		i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
 	if (ctx && ctx->ring[rq->engine->id].state)
 		i915_gem_object_ggtt_unpin(ctx->ring[rq->engine->id].state);
 
@@ -701,6 +782,8 @@ void i915_request_switch_context__undo(struct i915_gem_request *rq)
 	if (!rq->has_ctx_switch)
 		return;
 
+	if (rq->ctx->ppgtt)
+		i915_gem_object_ggtt_unpin(rq->ctx->ppgtt->state);
 	if (rq->ctx->ring[rq->engine->id].state)
 		i915_gem_object_ggtt_unpin(rq->ctx->ring[rq->engine->id].state);
 }
@@ -761,7 +844,7 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
 	}
 
 	idr_remove(&ctx->file_priv->context_idr, ctx->user_handle);
-	i915_gem_context_unreference(ctx);
+	context_idr_cleanup(ctx->user_handle, ctx, NULL);
 	mutex_unlock(&dev->struct_mutex);
 
 	DRM_DEBUG_DRIVER("HW context %d destroyed\n", args->ctx_id);
