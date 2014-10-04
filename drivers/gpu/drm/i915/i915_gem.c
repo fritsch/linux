@@ -4176,11 +4176,6 @@ i915_gem_madvise_ioctl(struct drm_device *dev, void *data,
 		goto unlock;
 	}
 
-	if (i915_gem_obj_is_pinned(obj)) {
-		ret = -EINVAL;
-		goto out;
-	}
-
 	if (args->madv == I915_MADV_INVALIDATE) {
 		ret = drop_pages(obj);
 	} else if (args->madv == I915_MADV_POPULATE) {
@@ -4190,13 +4185,12 @@ i915_gem_madvise_ioctl(struct drm_device *dev, void *data,
 			obj->madv = args->madv;
 
 		/* if the object is no longer attached, discard its backing storage */
-		if (i915_gem_object_is_purgeable(obj) && obj->pages == NULL)
+		if (obj->pages == NULL && i915_gem_object_is_purgeable(obj))
 			i915_gem_object_truncate(obj);
 	}
 
 	args->retained = obj->madv != __I915_MADV_PURGED;
 
-out:
 	drm_gem_object_unreference(&obj->base);
 unlock:
 	mutex_unlock(&dev->struct_mutex);
