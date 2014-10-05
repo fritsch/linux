@@ -268,17 +268,24 @@ size_t sg_pcopy_to_buffer(struct scatterlist *sgl, unsigned int nents,
 struct sg_page_iter {
 	struct scatterlist	*sg;		/* sg holding the page */
 	unsigned int		sg_pgoffset;	/* page offset within the sg */
+	unsigned int		sg_pgcount;	/* page count within the sg */
 
 	/* these are internal states, keep away */
 	unsigned int		__nents;	/* remaining sg entries */
-	int			__pg_advance;	/* nr pages to advance at the
-						 * next step */
 };
 
-bool __sg_page_iter_next(struct sg_page_iter *piter);
+bool ___sg_page_iter_next(struct sg_page_iter *piter);
 void __sg_page_iter_start(struct sg_page_iter *piter,
 			  struct scatterlist *sglist, unsigned int nents,
 			  unsigned long pgoffset);
+
+static inline bool __sg_page_iter_next(struct sg_page_iter *piter)
+{
+	if (++piter->sg_pgoffset < piter->sg_pgcount)
+		return true;
+
+	return ___sg_page_iter_next(piter);
+}
 /**
  * sg_page_iter_page - get the current page held by the page iterator
  * @piter:	page iterator holding the page

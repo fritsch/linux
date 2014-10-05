@@ -405,41 +405,40 @@ int sg_alloc_table_from_pages(struct sg_table *sgt,
 }
 EXPORT_SYMBOL(sg_alloc_table_from_pages);
 
+static int sg_page_count(struct scatterlist *sg)
+{
+	return (sg->offset + sg->length + PAGE_SIZE - 1) >> PAGE_SHIFT;
+}
+
 void __sg_page_iter_start(struct sg_page_iter *piter,
 			  struct scatterlist *sglist, unsigned int nents,
 			  unsigned long pgoffset)
 {
-	piter->__pg_advance = 0;
 	piter->__nents = nents;
-
 	piter->sg = sglist;
-	piter->sg_pgoffset = pgoffset;
+
+	piter->sg_pgoffset = pgoffset - 1;
+	piter->sg_pgcount = sglist ? sg_page_count(sglist) : 0;
 }
 EXPORT_SYMBOL(__sg_page_iter_start);
 
-static int sg_page_count(struct scatterlist *sg)
-{
-	return PAGE_ALIGN(sg->offset + sg->length) >> PAGE_SHIFT;
-}
-
-bool __sg_page_iter_next(struct sg_page_iter *piter)
+bool ___sg_page_iter_next(struct sg_page_iter *piter)
 {
 	if (!piter->__nents || !piter->sg)
 		return false;
 
-	piter->sg_pgoffset += piter->__pg_advance;
-	piter->__pg_advance = 1;
-
-	while (piter->sg_pgoffset >= sg_page_count(piter->sg)) {
-		piter->sg_pgoffset -= sg_page_count(piter->sg);
+	do {
+		piter->sg_pgoffset -= piter->sg_pgcount;
 		piter->sg = sg_next(piter->sg);
 		if (!--piter->__nents || !piter->sg)
 			return false;
-	}
+
+		piter->sg_pgcount = sg_page_count(piter->sg);
+	} while (piter->sg_pgoffset >= piter->sg_pgcount);
 
 	return true;
 }
-EXPORT_SYMBOL(__sg_page_iter_next);
+EXPORT_SYMBOL(___sg_page_iter_next);
 
 /**
  * sg_miter_start - start mapping iteration over a sg list
