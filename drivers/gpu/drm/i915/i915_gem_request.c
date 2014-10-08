@@ -325,7 +325,9 @@ int i915_request_commit(struct i915_gem_request *rq)
 	}
 
 	if (simulated_hang(rq->engine))
-		i915_handle_error(rq->i915->dev, true, "Simulated hang");
+		i915_handle_error(rq->i915->dev,
+				  I915_HANG_RESET | I915_HANG_SIMULATED,
+				  "Simulated hang");
 
 	if (!check_reset(rq))
 		return rq->i915->mm.interruptible ? -EAGAIN : -EIO;

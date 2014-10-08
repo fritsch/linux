@@ -1265,8 +1265,8 @@ static void snb_gt_irq_handler(struct drm_device *dev,
 	if (gt_iir & (GT_BLT_CS_ERROR_INTERRUPT |
 		      GT_BSD_CS_ERROR_INTERRUPT |
 		      GT_RENDER_CS_MASTER_ERROR_INTERRUPT)) {
-		i915_handle_error(dev, false, "GT error interrupt 0x%08x",
-				  gt_iir);
+		i915_handle_error(dev, 0,
+				  "GT error interrupt 0x%08x", gt_iir);
 	}
 
 	if (gt_iir & GT_PARITY_ERROR(dev))
@@ -1658,7 +1658,7 @@ static void gen6_rps_irq_handler(struct drm_i915_private *dev_priv, u32 pm_iir)
 			notify_ring(dev_priv->dev, &dev_priv->engine[VECS]);
 
 		if (pm_iir & PM_VEBOX_CS_ERROR_INTERRUPT) {
-			i915_handle_error(dev_priv->dev, false,
+			i915_handle_error(dev_priv->dev, 0,
 					  "VEBOX CS error interrupt 0x%08x",
 					  pm_iir);
 		}
@@ -2487,7 +2487,7 @@ static void i915_report_and_clear_eir(struct drm_device *dev)
  * so userspace knows something bad happened (should trigger collection
  * of a ring dump etc.).
  */
-void i915_handle_error(struct drm_device *dev, bool wedged,
+void i915_handle_error(struct drm_device *dev, unsigned flags,
 		       const char *fmt, ...)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -2498,10 +2498,11 @@ void i915_handle_error(struct drm_device *dev, bool wedged,
 	vscnprintf(error_msg, sizeof(error_msg), fmt, args);
 	va_end(args);
 
-	i915_capture_error_state(dev, wedged, error_msg);
+	if ((flags & I915_HANG_SIMULATED) == 0)
+		i915_capture_error_state(dev, flags, error_msg);
 	i915_report_and_clear_eir(dev);
 
-	if (wedged) {
+	if (flags & I915_HANG_RESET) {
 		atomic_set_mask(I915_RESET_IN_PROGRESS_FLAG,
 				&dev_priv->gpu_error.reset_counter);
 
@@ -2841,7 +2842,7 @@ engine_stuck(struct intel_engine_cs *engine, u64 acthd)
 	 */
 	tmp = I915_READ_CTL(engine);
 	if (tmp & RING_WAIT) {
-		i915_handle_error(dev_priv->dev, false,
+		i915_handle_error(dev_priv->dev, 0,
 				  "Kicking stuck wait on %s",
 				  engine->name);
 		I915_WRITE_CTL(engine, tmp);
@@ -2853,7 +2854,7 @@ engine_stuck(struct intel_engine_cs *engine, u64 acthd)
 		default:
 			return HANGCHECK_HUNG;
 		case 1:
-			i915_handle_error(dev_priv->dev, false,
+			i915_handle_error(dev_priv->dev, 0,
 					  "Kicking stuck semaphore on %s",
 					  engine->name);
 			I915_WRITE_CTL(engine, tmp);
@@ -3018,7 +3019,7 @@ static void i915_hangcheck_elapsed(struct work_struct *work)
 		if (rings_stall)
 			msg[--len] = '\0';
 
-		return i915_handle_error(dev_priv->dev, true, msg);
+		return i915_handle_error(dev_priv->dev, I915_HANG_RESET, msg);
 	}
 
 	if (busy_count)
@@ -3710,7 +3711,7 @@ static irqreturn_t i8xx_irq_handler(int irq, void *arg)
 		 */
 		spin_lock(&dev_priv->irq_lock);
 		if (iir & I915_RENDER_COMMAND_PARSER_ERROR_INTERRUPT)
-			i915_handle_error(dev, false,
+			i915_handle_error(dev, 0,
 					  "Command parser error, iir 0x%08x",
 					  iir);
 
@@ -3893,7 +3894,7 @@ static irqreturn_t i915_irq_handler(int irq, void *arg)
 		 */
 		spin_lock(&dev_priv->irq_lock);
 		if (iir & I915_RENDER_COMMAND_PARSER_ERROR_INTERRUPT)
-			i915_handle_error(dev, false,
+			i915_handle_error(dev, 0,
 					  "Command parser error, iir 0x%08x",
 					  iir);
 
@@ -4118,7 +4119,7 @@ static irqreturn_t i965_irq_handler(int irq, void *arg)
 		 */
 		spin_lock(&dev_priv->irq_lock);
 		if (iir & I915_RENDER_COMMAND_PARSER_ERROR_INTERRUPT)
-			i915_handle_error(dev, false,
+			i915_handle_error(dev, 0,
 					  "Command parser error, iir 0x%08x",
 					  iir);
 

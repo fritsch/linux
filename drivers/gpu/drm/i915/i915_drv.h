@@ -2331,8 +2331,11 @@ void intel_hpd_cancel_work(struct drm_i915_private *dev_priv);
 /* i915_irq.c */
 void i915_queue_hangcheck(struct drm_device *dev);
 __printf(3, 4)
-void i915_handle_error(struct drm_device *dev, bool wedged,
+void i915_handle_error(struct drm_device *dev,
+		       unsigned flags,
 		       const char *fmt, ...);
+#define I915_HANG_RESET 0x1
+#define I915_HANG_SIMULATED 0x2
 
 extern void intel_irq_init(struct drm_i915_private *dev_priv);
 extern void intel_hpd_init(struct drm_i915_private *dev_priv);
