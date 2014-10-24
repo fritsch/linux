@@ -2248,8 +2248,8 @@ static bool intel_edp_psr_match_conditions(struct intel_dp *intel_dp)
 
 static void intel_edp_set_psr_property(struct intel_connector *connector, uint64_t val)
 {
-	drm_object_property_set_value(&connector->base.base,
-				      to_i915(connector->base.dev)->psr.property, val);
+	struct drm_property *p = to_i915(connector->base.dev)->psr.property;
+	drm_object_property_set_value(&connector->base.base,p, val);
 }
 
 static void intel_edp_psr_do_enable(struct intel_dp *intel_dp)
@@ -5405,6 +5405,8 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 	intel_connector_attach_encoder(intel_connector, intel_encoder);
 	drm_connector_register(connector);
 
+	intel_dp_add_properties(intel_dp, connector);
+
 	if (HAS_DDI(dev))
 		intel_connector->get_hw_state = intel_ddi_connector_get_hw_state;
 	else
@@ -5465,8 +5467,6 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 		drm_connector_cleanup(connector);
 		return false;
 	}
-
-	intel_dp_add_properties(intel_dp, connector);
 
 	/* For G4X desktop chip, PEG_BAND_GAP_DATA 3:0 must first be written
 	 * 0xd.  Failure to do so will result in spurious interrupts being
