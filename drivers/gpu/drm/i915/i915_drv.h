@@ -2709,6 +2709,8 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 				    struct drm_file *file_priv);
 int i915_gem_context_setparam_ioctl(struct drm_device *dev, void *data,
 				    struct drm_file *file_priv);
+int i915_gem_context_dump_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *file);
 
 /* i915_gem_render_state.c */
 int i915_gem_render_state_init(struct i915_gem_request *rq);

@@ -927,3 +927,67 @@ int i915_gem_context_setparam_ioctl(struct drm_device *dev, void *data,
 
 	return ret;
 }
+
+int i915_gem_context_dump_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *file)
+{
+	struct drm_i915_file_private *file_priv = file->driver_priv;
+	struct drm_i915_gem_context_dump *args = data;
+	struct intel_context *ctx;
+	int ret;
+
+	ret = i915_mutex_lock_interruptible(dev);
+	if (ret)
+		return ret;
+
+	ctx = i915_gem_context_get(file_priv, args->ctx_id);
+	if (IS_ERR(ctx)) {
+		mutex_unlock(&dev->struct_mutex);
+		return PTR_ERR(ctx);
+	}
+
+	if (args->size >= ctx->ring[RCS].state->base.size) {
+		struct intel_engine_cs *rcs = RCS_ENGINE(dev);
+		struct drm_i915_gem_object *obj = ctx->ring[RCS].state;
+		struct sg_page_iter sg_iter;
+		struct i915_gem_request *rq;
+		int n = 0;
+
+		rq = intel_engine_alloc_request(rcs, ctx);
+		if (IS_ERR(rq))
+			ret = PTR_ERR(rq);
+
+		/* Force a restore to itself in order to save the ctx */
+		if (ret == 0)
+			ret = mi_set_context(rq, &ctx->ring[RCS], 0);
+		if (ret == 0)
+			ret = i915_request_wait(rq);
+		i915_request_put(rq);
+		if (ret) {
+			mutex_unlock(&dev->struct_mutex);
+			return ret;
+		}
+
+		for_each_sg_page(obj->pages->sgl, &sg_iter, obj->pages->nents, 0) {
+			struct page *page = sg_page_iter_page(&sg_iter);
+			void *vaddr;
+
+			vaddr = kmap(page);
+			drm_clflush_virt_range(vaddr, PAGE_SIZE);
+			ret = copy_to_user(to_user_ptr(args->ptr + n),
+					   vaddr, PAGE_SIZE);
+			kunmap(page);
+			if (ret) {
+				mutex_unlock(&dev->struct_mutex);
+				return -EFAULT;
+			}
+
+			n += PAGE_SIZE;
+		}
+	}
+
+	args->size = ctx->ring[RCS].state->base.size;
+	mutex_unlock(&dev->struct_mutex);
+
+	return 0;
+}

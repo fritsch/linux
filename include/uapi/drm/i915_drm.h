@@ -274,6 +274,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_I915_GEM_USERPTR		0x33
 #define DRM_I915_GEM_CONTEXT_GETPARAM	0x34
 #define DRM_I915_GEM_CONTEXT_SETPARAM	0x35
+#define DRM_I915_GEM_CONTEXT_DUMP	0x36
 
 #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
 #define DRM_IOCTL_I915_FLUSH		DRM_IO ( DRM_COMMAND_BASE + DRM_I915_FLUSH)
@@ -327,6 +328,7 @@ typedef struct _drm_i915_sarea {
 #define DRM_IOCTL_I915_GEM_USERPTR			DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_GEM_USERPTR, struct drm_i915_gem_userptr)
 #define DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM	DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_GEM_CONTEXT_GETPARAM, struct drm_i915_gem_context_param)
 #define DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM	DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_GEM_CONTEXT_SETPARAM, struct drm_i915_gem_context_param)
+#define DRM_IOCTL_I915_GEM_CONTEXT_DUMP	DRM_IOWR (DRM_COMMAND_BASE + DRM_I915_GEM_CONTEXT_DUMP, struct drm_i915_gem_context_dump)
 
 /* Allow drivers to submit batchbuffers directly to hardware, relying
  * on the security mechanisms provided by hardware.
@@ -1164,6 +1166,12 @@ struct drm_i915_gem_context_param {
 	__u64 param;
 #define I915_CONTEXT_PARAM_BAN_PERIOD 0x1
 	__u64 value;
+};
+
+struct drm_i915_gem_context_dump {
+	__u32 ctx_id;
+	__u32 size;
+	__u64 ptr;
 };
 
 #endif /* _UAPI_I915_DRM_H_ */
