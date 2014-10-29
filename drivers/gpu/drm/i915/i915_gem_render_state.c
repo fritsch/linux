@@ -33,6 +33,7 @@ struct render_state {
 	struct drm_i915_gem_object *obj;
 	u64 ggtt_offset;
 	int gen;
+	unsigned batch_length;
 };
 
 static const struct intel_renderstate_rodata *
@@ -95,8 +96,12 @@ static int render_state_setup(struct render_state *so)
 	page = sg_page(so->obj->pages->sgl);
 	d = kmap(page);
 
+	so->batch_length = 0;
 	while (i < rodata->batch_items) {
 		u32 s = rodata->batch[i];
+
+		if (so->batch_length == 0 && s == MI_BATCH_BUFFER_END)
+			so->batch_length = sizeof(u32) * ALIGN(i, 2);
 
 		if (i * 4  == rodata->reloc[reloc_index]) {
 			u64 r = s + so->ggtt_offset;
@@ -155,7 +160,7 @@ int i915_gem_render_state_init(struct i915_gem_request *rq)
 
 	ret = i915_request_emit_batchbuffer(rq, NULL,
 					    so.ggtt_offset,
-					    so.rodata->batch_items * 4,
+					    so.batch_length,
 					    I915_DISPATCH_SECURE);
 	if (ret)
 		goto out;
