@@ -420,6 +420,7 @@ struct drm_i915_error_state {
 
 		struct drm_i915_error_object {
 			int page_count;
+			int unused;
 			u32 gtt_offset;
 			u32 *pages[0];
 		} *ringbuffer, *batchbuffer, *wa_batchbuffer, *ctx, *hws_page;

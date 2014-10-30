@@ -28,6 +28,7 @@
  */
 
 #include <generated/utsrelease.h>
+#include <linux/zlib.h>
 #include "i915_drv.h"
 
 static const char *yesno(int v)
@@ -328,18 +329,44 @@ void i915_error_printf(struct drm_i915_error_state_buf *e, const char *f, ...)
 	va_end(args);
 }
 
+static bool
+ascii85_encode(uint32_t in, char *out)
+{
+	int i;
+
+	if (in == 0)
+		return false;
+
+	out[5] = '\0';
+	for (i = 5; i--; ) {
+		int digit = in % 85;
+		out[i] = digit + 33;
+		in /= 85;
+	}
+
+	return true;
+}
+
 static void print_error_obj(struct drm_i915_error_state_buf *m,
 			    struct drm_i915_error_object *obj)
 {
-	int page, offset, elt;
+	char out[6];
+	int page;
 
-	for (page = offset = 0; page < obj->page_count; page++) {
-		for (elt = 0; elt < PAGE_SIZE/4; elt++) {
-			err_printf(m, "%08x :  %08x\n", offset,
-				   obj->pages[page][elt]);
-			offset += 4;
+	err_puts(m, ":"); /* indicate compressed data */
+	for (page = 0; page < obj->page_count; page++) {
+		int i, len = PAGE_SIZE;
+		if (page == obj->page_count - 1)
+			len -= obj->unused;
+		len = (len + 3) / 4;
+		for (i = 0; i < len; i++) {
+			if (ascii85_encode(obj->pages[page][i], out))
+				err_puts(m, out);
+			else
+				err_puts(m, "z");
 		}
 	}
+	err_puts(m, "\n");
 }
 
 int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
@@ -349,8 +376,8 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_i915_error_state *error = error_priv->error;
 	struct drm_i915_error_object *obj;
-	int i, j, offset, elt;
 	int max_hangcheck_score;
+	int i, j;
 
 	if (!error) {
 		err_printf(m, "no error state collected\n");
@@ -475,16 +502,7 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 		if ((obj = ering->hws_page)) {
 			err_printf(m, "%s --- HW Status = 0x%08x\n",
 				   name, obj->gtt_offset);
-			offset = 0;
-			for (elt = 0; elt < PAGE_SIZE/16; elt += 4) {
-				err_printf(m, "[%04x] %08x %08x %08x %08x\n",
-					   offset,
-					   obj->pages[0][elt],
-					   obj->pages[0][elt+1],
-					   obj->pages[0][elt+2],
-					   obj->pages[0][elt+3]);
-					offset += 16;
-			}
+			print_error_obj(m, obj);
 		}
 
 		if ((obj = error->ring[i].ctx)) {
@@ -496,14 +514,7 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 
 	if ((obj = error->semaphore_obj)) {
 		err_printf(m, "Semaphore page = 0x%08x\n", obj->gtt_offset);
-		for (elt = 0; elt < PAGE_SIZE/16; elt += 4) {
-			err_printf(m, "[%04x] %08x %08x %08x %08x\n",
-				   elt * 4,
-				   obj->pages[0][elt],
-				   obj->pages[0][elt+1],
-				   obj->pages[0][elt+2],
-				   obj->pages[0][elt+3]);
-		}
+		print_error_obj(m, obj);
 	}
 
 	if (error->overlay)
@@ -559,7 +570,7 @@ static void i915_error_object_free(struct drm_i915_error_object *obj)
 		return;
 
 	for (page = 0; page < obj->page_count; page++)
-		kfree(obj->pages[page]);
+		free_page((unsigned long)obj->pages[page]);
 
 	kfree(obj);
 }
@@ -585,6 +596,35 @@ static void i915_error_state_free(struct kref *error_ref)
 	kfree(error);
 }
 
+static int compress_page(struct z_stream_s *zstream,
+			 void *src,
+			 struct drm_i915_error_object *dst)
+{
+	zstream->next_in = src;
+	zstream->avail_in = PAGE_SIZE;
+
+	do {
+		if (zstream->avail_out == 0) {
+			zstream->next_out = (void *)__get_free_page(GFP_ATOMIC);
+			if (zstream->next_out == NULL)
+				return -ENOMEM;
+
+			dst->pages[dst->page_count++] = (void *)zstream->next_out;
+			zstream->avail_out = PAGE_SIZE;
+		}
+
+		if (zlib_deflate(zstream, Z_SYNC_FLUSH) != Z_OK)
+			return -EIO;
+
+#if 0
+		if (zstream->total_out > zstream->total_in)
+			return -E2BIG;
+#endif
+	} while (zstream->avail_in);
+
+	return 0;
+}
+
 static struct drm_i915_error_object *
 i915_error_object_create(struct drm_i915_private *dev_priv,
 			 struct i915_vma *vma)
@@ -593,8 +633,8 @@ i915_error_object_create(struct drm_i915_private *dev_priv,
 	struct drm_i915_error_object *dst;
 	int num_pages;
 	bool use_ggtt;
-	int i = 0;
 	u32 reloc_offset;
+	struct z_stream_s zstream;
 
 	if (vma == NULL)
 		return NULL;
@@ -605,11 +645,22 @@ i915_error_object_create(struct drm_i915_private *dev_priv,
 
 	num_pages = src->base.size >> PAGE_SHIFT;
 
-	dst = kmalloc(sizeof(*dst) + num_pages * sizeof(u32 *), GFP_ATOMIC);
+	dst = kmalloc(sizeof(*dst) + (10 * num_pages * sizeof(u32 *) >> 3), GFP_ATOMIC);
 	if (dst == NULL)
 		return NULL;
 
 	dst->gtt_offset = vma->node.start;
+	dst->page_count = 0;
+	dst->unused = 0;
+
+	memset(&zstream, 0, sizeof(zstream));
+	zstream.workspace = kmalloc(zlib_deflate_workspacesize(MAX_WBITS, MAX_MEM_LEVEL),
+				    GFP_ATOMIC);
+	if (zstream.workspace == NULL ||
+	    zlib_deflateInit(&zstream, Z_DEFAULT_COMPRESSION) != Z_OK) {
+		kfree(dst);
+		return NULL;
+	}
 
 	reloc_offset = dst->gtt_offset;
 	use_ggtt = (src->cache_level == I915_CACHE_NONE &&
@@ -632,53 +683,48 @@ i915_error_object_create(struct drm_i915_private *dev_priv,
 	if (use_ggtt && src->cache_level != I915_CACHE_NONE && !HAS_LLC(dev_priv->dev))
 		goto unwind;
 
-	dst->page_count = num_pages;
+	if (!use_ggtt)
+		reloc_offset = 0;
+
 	while (num_pages--) {
 		unsigned long flags;
-		void *d;
-
-		d = kmalloc(PAGE_SIZE, GFP_ATOMIC);
-		if (d == NULL)
-			goto unwind;
+		void *s;
+		int ret;
 
 		local_irq_save(flags);
 		if (use_ggtt) {
-			void __iomem *s;
-
 			/* Simply ignore tiling or any overlapping fence.
 			 * It's part of the error state, and this hopefully
 			 * captures what the GPU read.
 			 */
-
-			s = io_mapping_map_atomic_wc(dev_priv->gtt.mappable,
-						     reloc_offset);
-			memcpy_fromio(d, s, PAGE_SIZE);
+			s = (void *__force)
+				io_mapping_map_atomic_wc(dev_priv->gtt.mappable,
+							 reloc_offset);
+			ret = compress_page(&zstream, s, dst);
 			io_mapping_unmap_atomic(s);
 		} else {
-			struct page *page;
-			void *s;
-
-			page = i915_gem_object_get_page(src, i);
-
-			drm_clflush_pages(&page, 1);
-
-			s = kmap_atomic(page);
-			memcpy(d, s, PAGE_SIZE);
+			s = kmap_atomic(i915_gem_object_get_page(src, reloc_offset >> PAGE_SHIFT));
+			drm_clflush_virt_range(s, PAGE_SIZE);
+			ret = compress_page(&zstream, s, dst);
 			kunmap_atomic(s);
-
-			drm_clflush_pages(&page, 1);
 		}
 		local_irq_restore(flags);
-
-		dst->pages[i++] = d;
+		if (ret)
+			goto unwind;
 		reloc_offset += PAGE_SIZE;
 	}
+	zlib_deflate(&zstream, Z_FINISH);
+	dst->unused = zstream.avail_out;
+	zlib_deflateEnd(&zstream);
+	kfree(zstream.workspace);
 
 	return dst;
 
 unwind:
-	while (i--)
-		kfree(dst->pages[i]);
+	while (dst->page_count--)
+		free_page((unsigned long)dst->pages[dst->page_count]);
+	zlib_deflateEnd(&zstream);
+	kfree(zstream.workspace);
 	kfree(dst);
 	return NULL;
 }

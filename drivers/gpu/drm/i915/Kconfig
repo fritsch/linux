@@ -6,6 +6,7 @@ config DRM_I915
 	select INTEL_GTT
 	select AGP_INTEL if AGP
 	select INTERVAL_TREE
+	select ZLIB_DEFLATE
 	# we need shmfs for the swappable backing store, and in particular
 	# the shmem_readpage() which depends upon tmpfs
 	select SHMEM
