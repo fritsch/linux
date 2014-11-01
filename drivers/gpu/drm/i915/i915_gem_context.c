@@ -197,7 +197,8 @@ i915_gem_alloc_context_obj(struct drm_device *dev, size_t size)
 
 static struct intel_context *
 i915_gem_create_context(struct drm_device *dev,
-			struct drm_i915_file_private *file_priv)
+			struct drm_i915_file_private *file_priv,
+			bool is_default)
 {
 	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct intel_context *ctx;
@@ -214,8 +215,13 @@ i915_gem_create_context(struct drm_device *dev,
 	ctx->i915 = dev_priv;
 
 	if (dev_priv->hw_context_size) {
-		struct drm_i915_gem_object *obj =
-			i915_gem_alloc_context_obj(dev, dev_priv->hw_context_size);
+		struct drm_i915_gem_object *obj;
+
+		if (is_default) {
+			obj = dev_priv->default_context->ring[RCS].state;
+			drm_gem_object_reference(&obj->base);
+		} else
+			obj = i915_gem_alloc_context_obj(dev, dev_priv->hw_context_size);
 		if (IS_ERR(obj)) {
 			ret = PTR_ERR(obj);
 			goto err;
@@ -231,6 +237,8 @@ i915_gem_create_context(struct drm_device *dev,
 			goto err;
 	} else
 		ret = DEFAULT_CONTEXT_HANDLE;
+
+	BUG_ON(is_default && ret != DEFAULT_CONTEXT_HANDLE);
 
 	ctx->file_priv = file_priv;
 	ctx->user_handle = ret;
@@ -288,7 +296,7 @@ int i915_gem_context_init(struct drm_device *dev)
 	 * It stores the context state of the GPU for applications that don't
 	 * utilize HW contexts or per-process VM, as well as an idle case.
 	 */
-	ctx = i915_gem_create_context(dev, NULL);
+	ctx = i915_gem_create_context(dev, NULL, false);
 	if (IS_ERR(ctx)) {
 		DRM_ERROR("Failed to create default global context (error %ld)\n",
 			  PTR_ERR(ctx));
@@ -464,7 +472,7 @@ int i915_gem_context_open(struct drm_device *dev, struct drm_file *file)
 	idr_init(&file_priv->context_idr);
 
 	mutex_lock(&dev->struct_mutex);
-	ctx = i915_gem_create_context(dev, file_priv);
+	ctx = i915_gem_create_context(dev, file_priv, true);
 	mutex_unlock(&dev->struct_mutex);
 
 	if (IS_ERR(ctx)) {
@@ -646,6 +654,13 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 			goto unpin_ctx;
 	}
 
+	/*
+	 * Pin can switch back to the default context if we end up calling into
+	 * evict_everything - as a last ditch gtt defrag effort that also
+	 * switches to the default context. Hence we need to reload from here.
+	 */
+	from = rq->ring->last_context;
+
 	/* With execlists enabled, the ring, vm and logical state are
 	 * interwined and we do not need to explicitly load the mm or
 	 * logical state as it is loaded along with the LRCA.
@@ -654,7 +669,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 	 * whilst in use and reload the l3 mapping if it has changed.
 	 */
 	if (!rq->engine->execlists_enabled) {
-		if (ctx->state != NULL) {
+		if (ctx->state != (from ? from->ring[rq->engine->id].state : NULL)) {
 			u32 flags;
 
 			flags = 0;
@@ -692,13 +707,6 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 		if (l3_remap(rq, i) == 0)
 			rq->remap_l3 |= 1 << i;
 	}
-
-	/*
-	 * Pin can switch back to the default context if we end up calling into
-	 * evict_everything - as a last ditch gtt defrag effort that also
-	 * switches to the default context. Hence we need to reload from here.
-	 */
-	from = rq->ring->last_context;
 
 	/* The backing object for the context is done after switching to the
 	 * *next* context. Therefore we cannot retire the previous context until
@@ -811,7 +819,7 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
 	if (ret)
 		return ret;
 
-	ctx = i915_gem_create_context(dev, file_priv);
+	ctx = i915_gem_create_context(dev, file_priv, false);
 	mutex_unlock(&dev->struct_mutex);
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
