@@ -9386,8 +9386,8 @@ static int intel_gen9_queue_flip(struct i915_gem_request *rq,
 				 struct drm_i915_gem_object *obj,
 				 uint32_t flags)
 {
+	struct intel_ringbuffer *ring;
 	uint32_t plane = 0, stride;
-	int ret;
 
 	switch (crtc->pipe) {
 	case PIPE_A:
@@ -9585,6 +9585,9 @@ static bool __intel_pageflip_stall_check(struct drm_device *dev,
 	if (!work->enable_stall_check)
 		return false;
 
+	if (intel_crtc->reset_counter != atomic_read(&dev_priv->gpu_error.reset_counter))
+		return true;
+
 	if (work->flip_ready_vblank == 0) {
 		if (work->flip_queued_request &&
 		    !i915_request_complete(work->flip_queued_request))
@@ -9777,7 +9780,7 @@ static int intel_crtc_page_flip(struct drm_crtc *crtc,
 		struct intel_context *ctx = engine->default_context;
 		if (obj->last_write.request)
 			ctx = obj->last_write.request->ctx;
-		rq = intel_engine_alloc_request(engine, ctx);
+		rq = i915_request_create(ctx, engine);
 		if (IS_ERR(rq)) {
 			ret = PTR_ERR(rq);
 			goto cleanup_pending;

@@ -710,7 +710,7 @@ static int i915_gem_request_info(struct seq_file *m, void *data)
 		list_for_each_entry(rq, &engine->requests, engine_link) {
 			seq_printf(m, "    %d @ %d\n",
 				   rq->seqno,
-				   (int)(jiffies - rq->emitted_jiffies));
+				   rq->emitted_jiffies ? (int)(jiffies - rq->emitted_jiffies) : 0);
 		}
 		count++;
 	}
@@ -1893,6 +1893,9 @@ static int i915_dump_lrc(struct seq_file *m, void *unused)
 			struct intel_context *ctx = ring->ctx;
 			struct task_struct *task;
 
+			if (ctx == NULL)
+				continue;
+
 			seq_printf(m, "CONTEXT: %s", engine->name);
 
 			rcu_read_lock();
@@ -1900,8 +1903,7 @@ static int i915_dump_lrc(struct seq_file *m, void *unused)
 			seq_printf(m, " %d:%d\n", task ? task->pid : 0, ctx->file_priv ? ctx->user_handle : 0);
 			rcu_read_unlock();
 
-			if (engine->execlists_enabled &&
-			    ctx->ring[engine->id].state) {
+			if (ctx->ring[engine->id].state) {
 				struct drm_i915_gem_object *obj;
 				struct page *page;
 				uint32_t *reg_state;
@@ -1921,8 +1923,7 @@ static int i915_dump_lrc(struct seq_file *m, void *unused)
 				kunmap_atomic(reg_state);
 
 				seq_putc(m, '\n');
-			} else
-				seq_puts(m, "\tLogical Ring Contexts are disabled\n");
+			}
 		}
 	}
 

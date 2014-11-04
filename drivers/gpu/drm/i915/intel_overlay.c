@@ -255,9 +255,8 @@ static int intel_overlay_do_wait_request(struct intel_overlay *overlay,
 static struct i915_gem_request *
 intel_overlay_alloc_request(struct intel_overlay *overlay)
 {
-	struct drm_i915_private *i915 = to_i915(overlay->dev);
-	return intel_engine_alloc_request(RCS_ENGINE(i915),
-					  RCS_ENGINE(i915)->default_context);
+	struct intel_engine_cs *rcs = RCS_ENGINE(overlay->dev);
+	return i915_request_create(rcs->default_context, rcs);
 }
 
 /* overlay needs to be disable in OCMD reg */

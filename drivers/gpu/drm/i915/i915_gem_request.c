@@ -34,6 +34,77 @@ static bool check_reset(struct i915_gem_request *rq)
 	return likely(reset == rq->reset_counter);
 }
 
+static u32
+next_seqno(struct drm_i915_private *i915)
+{
+	/* reserve 0 for non-seqno */
+	if (++i915->next_seqno == 0)
+		++i915->next_seqno;
+	return i915->next_seqno;
+}
+
+struct i915_gem_request *
+i915_request_create(struct intel_context *ctx,
+		    struct intel_engine_cs *engine)
+{
+	struct intel_ringbuffer *ring;
+	struct i915_gem_request *rq;
+	int ret, n;
+
+	lockdep_assert_held(&engine->i915->dev->struct_mutex);
+
+	/* Pin first in case we need to recurse */
+	ring = engine->pin_context(engine, ctx);
+	if (IS_ERR(ring))
+		return ERR_CAST(ring);
+
+	rq = kzalloc(sizeof(*rq), GFP_KERNEL);
+	if (rq == NULL) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	kref_init(&rq->kref);
+	INIT_LIST_HEAD(&rq->vmas);
+	INIT_LIST_HEAD(&rq->breadcrumb_link);
+
+	rq->i915 = engine->i915;
+	rq->ring = ring;
+	rq->engine = engine;
+
+	rq->reset_counter = atomic_read(&rq->i915->gpu_error.reset_counter);
+	if (rq->reset_counter & (I915_RESET_IN_PROGRESS_FLAG | I915_WEDGED)) {
+		ret = rq->reset_counter & I915_WEDGED ? -EIO : -EAGAIN;
+		goto err_rq;
+	}
+
+	rq->seqno = next_seqno(rq->i915);
+	memcpy(rq->semaphore, engine->semaphore.sync, sizeof(rq->semaphore));
+	for (n = 0; n < ARRAY_SIZE(rq->semaphore); n++)
+		if (__i915_seqno_passed(rq->semaphore[n], rq->seqno))
+			rq->semaphore[n] = 0;
+	rq->head = ring->tail;
+	rq->outstanding = true;
+	rq->pending_flush = ring->pending_flush;
+
+	rq->ctx = ctx;
+	i915_gem_context_reference(rq->ctx);
+
+	ret = i915_request_switch_context(rq);
+	if (ret)
+		goto err_ctx;
+
+	return rq;
+
+err_ctx:
+	i915_gem_context_unreference(ctx);
+err_rq:
+	kfree(rq);
+err:
+	engine->unpin_context(engine, ctx);
+	return ERR_PTR(ret);
+}
+
 void
 i915_request_add_vma(struct i915_gem_request *rq,
 		     struct i915_vma *vma,
@@ -44,6 +115,7 @@ i915_request_add_vma(struct i915_gem_request *rq,
 	u32 old_write = obj->base.write_domain;
 
 	lockdep_assert_held(&rq->i915->dev->struct_mutex);
+	BUG_ON(!drm_mm_node_allocated(&vma->node));
 
 	obj->base.write_domain = obj->base.pending_write_domain;
 	if (obj->base.write_domain == 0)
@@ -106,7 +178,7 @@ __i915_request_emit_breadcrumb(struct i915_gem_request *rq, int id)
 		return 0;
 
 	if (rq->outstanding) {
-		ret = i915_request_emit_flush(rq, I915_COMMAND_BARRIER);
+		ret = i915_request_emit_flush(rq, I915_FLUSH_CACHES | I915_COMMAND_BARRIER);
 		if (ret)
 			return ret;
 
@@ -123,8 +195,7 @@ __i915_request_emit_breadcrumb(struct i915_gem_request *rq, int id)
 		   __i915_seqno_passed(rq->seqno, engine->breadcrumb[id])) {
 		struct i915_gem_request *tmp;
 
-		tmp = intel_engine_alloc_request(engine,
-						 rq->ring->last_context);
+		tmp = i915_request_create(engine->last_context, engine);
 		if (IS_ERR(tmp))
 			return PTR_ERR(tmp);
 
@@ -192,6 +263,7 @@ add_to_client(struct i915_gem_request *rq)
 		list_add_tail(&rq->client_list,
 			      &file_priv->mm.request_list);
 		rq->file_priv = file_priv;
+		rq->emitted_jiffies = jiffies;
 		spin_unlock(&file_priv->mm.lock);
 	}
 }
@@ -277,6 +349,7 @@ add_to_obj(struct i915_gem_request *rq, struct i915_vma *vma)
 	list_move_tail(&obj->last_read[engine->id].engine_link,
 		       &engine->read_list);
 
+	BUG_ON(!drm_mm_node_allocated(&vma->node));
 	list_move_tail(&vma->mm_list, &vma->vm->active_list);
 }
 
@@ -313,7 +386,7 @@ int i915_request_commit(struct i915_gem_request *rq)
 
 	if (rq->head == rq->ring->tail) {
 		rq->completed = true;
-		goto done;
+		return 0;
 	}
 
 	if (simulated_hang(rq->engine))
@@ -336,16 +409,11 @@ int i915_request_commit(struct i915_gem_request *rq)
 		intel_ring_advance(rq->ring);
 	}
 	rq->tail = rq->ring->tail;
-	rq->emitted_jiffies = jiffies;
-
-	intel_runtime_pm_get(rq->i915);
 
 	trace_i915_gem_request_commit(rq);
 	ret = rq->engine->add_request(rq);
-	if (ret) {
-		intel_runtime_pm_put(rq->i915);
+	if (ret)
 		return ret;
-	}
 
 	i915_request_get(rq);
 
@@ -367,7 +435,17 @@ int i915_request_commit(struct i915_gem_request *rq)
 	if (rq->batch) {
 		add_to_client(rq);
 		rq->batch->vm->dirty = false;
+
+		i915_queue_hangcheck(rq->i915->dev);
 	}
+
+	rq->engine->last_request = rq;
+	intel_mark_busy(rq->i915->dev);
+
+	cancel_delayed_work_sync(&rq->i915->mm.idle_work);
+	mod_delayed_work(rq->i915->wq,
+			 &rq->i915->mm.retire_work,
+			 round_jiffies_up_relative(HZ));
 
 	while (!list_empty(&rq->vmas)) {
 		struct i915_vma *vma =
@@ -381,9 +459,13 @@ int i915_request_commit(struct i915_gem_request *rq)
 
 	i915_request_switch_context__commit(rq);
 
+	if (rq->engine->last_context) {
+		rq->engine->unpin_context(rq->engine, rq->engine->last_context);
+		i915_gem_context_unreference(rq->engine->last_context);
+	}
+
 	rq->engine->last_request = rq;
-done:
-	rq->ring->last_context = rq->ctx;
+	rq->engine->last_context = rq->ctx;
 	return 0;
 }
 
@@ -621,7 +703,6 @@ i915_request_retire(struct i915_gem_request *rq)
 	list_del(&rq->breadcrumb_link);
 	remove_from_client(rq);
 
-	intel_runtime_pm_put(rq->i915);
 	i915_request_put(rq);
 }
 
@@ -638,14 +719,15 @@ __i915_request_free(struct kref *kref)
 		 */
 		rq->ring->tail = rq->head;
 		rq->ring->space = intel_ring_space(rq->ring);
+
+		while (!list_empty(&rq->vmas))
+			i915_vma_unreserve(list_first_entry(&rq->vmas,
+							    struct i915_vma,
+							    exec_link));
+
+		rq->engine->unpin_context(rq->engine, rq->ctx);
+		i915_gem_context_unreference(rq->ctx);
 	}
 
-	while (!list_empty(&rq->vmas))
-		i915_vma_unreserve(list_first_entry(&rq->vmas,
-						    struct i915_vma,
-						    exec_link));
-
-	i915_request_switch_context__undo(rq);
-	i915_gem_context_unreference(rq->ctx);
 	kfree(rq);
 }

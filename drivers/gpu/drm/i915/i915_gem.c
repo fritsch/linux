@@ -181,6 +181,7 @@ i915_vma_retire__read(struct i915_vma *vma, int engine)
 		return;
 
 	if (drm_mm_node_allocated(&vma->node)) {
+		RQ_BUG_ON(list_empty(&vma->mm_list));
 		list_move_tail(&vma->mm_list, &vma->vm->inactive_list);
 		if (vma->vm->closed)
 			WARN_ON(i915_vma_unbind(vma));
@@ -2133,7 +2134,6 @@ i915_gem_shrink(struct drm_i915_private *dev_priv,
 static unsigned long
 i915_gem_shrink_all(struct drm_i915_private *dev_priv)
 {
-	i915_gem_evict_everything(dev_priv->dev);
 	return i915_gem_shrink(dev_priv, LONG_MAX,
 			       I915_SHRINK_BOUND | I915_SHRINK_UNBOUND);
 }
@@ -2191,10 +2191,9 @@ i915_gem_object_get_pages_gtt(struct drm_i915_gem_object *obj)
 		}
 		if (IS_ERR(page)) {
 			/* We've tried hard to allocate the memory by reaping
-			 * our own buffer, now let the real VM do its job and
+			 * our own buffers, now let the real VM do its job and
 			 * go down in flames if truly OOM.
 			 */
-			i915_gem_shrink_all(dev_priv);
 			page = shmem_read_mapping_page(mapping, i);
 			if (IS_ERR(page))
 				goto err_pages;
@@ -2312,8 +2311,8 @@ int i915_gem_set_seqno(struct drm_device *dev, u32 seqno)
 			if (!signaller->semaphore.signal)
 				continue;
 
-			rq = intel_engine_alloc_request(signaller,
-							signaller->default_context);
+			rq = i915_request_create(signaller->default_context,
+						 signaller);
 			if (IS_ERR(rq))
 				return PTR_ERR(rq);
 
@@ -2508,8 +2507,8 @@ i915_gem_flush_requests(struct drm_i915_private *i915)
 		if (engine->last_request->breadcrumb[i])
 			continue;
 
-		rq = intel_engine_alloc_request(engine,
-						engine->last_request->ctx);
+		rq = i915_request_create(engine->last_request->ctx,
+					 engine);
 		if (IS_ERR(rq))
 			continue;
 
@@ -2729,7 +2728,7 @@ i915_gem_object_sync(struct drm_i915_gem_object *obj,
 		}
 	}
 
-	if (retire)
+	if (retire && obj->active)
 		i915_gem_object_retire(obj);
 
 	return ret;
@@ -2795,8 +2794,10 @@ int i915_vma_unbind(struct i915_vma *vma)
 	struct drm_i915_gem_object *obj = vma->obj;
 	int ret;
 
-	if (!drm_mm_node_allocated(&vma->node))
+	if (!drm_mm_node_allocated(&vma->node)) {
+		RQ_BUG_ON(!list_empty(&vma->mm_list));
 		return 0;
+	}
 
 	if (vma->pin_count)
 		return -EBUSY;
@@ -2827,9 +2828,12 @@ int i915_vma_unbind(struct i915_vma *vma)
 	ret = vma->unbind_vma(vma);
 	if (ret)
 		goto out;
+	RQ_BUG_ON(vma->bound);
 
 	list_del_init(&vma->mm_list);
 	drm_mm_remove_node(&vma->node);
+	RQ_BUG_ON(drm_mm_node_allocated(&vma->node));
+
 	i915_vma_put(vma);
 
 	/* The unbound list is global, check if we were the last bound */
@@ -2862,11 +2866,13 @@ int i915_gpu_idle(struct drm_device *dev)
 
 		/* Only emit a wait if busy or we need to force a ctx switch */
 		rq = engine->last_request;
-		if (rq == NULL || rq->ctx != engine->default_context)
-			rq = intel_engine_alloc_request(engine,
-							engine->default_context);
-		if (IS_ERR(rq))
-			return PTR_ERR(rq);
+		if (rq == NULL || rq->ctx != engine->default_context) {
+			rq = i915_request_create(engine->default_context,
+						 engine);
+			if (IS_ERR(rq))
+				return PTR_ERR(rq);
+		} else
+			rq = i915_request_get(rq);
 
 		ret = i915_request_wait(rq);
 		i915_request_put(rq);
@@ -3359,16 +3365,17 @@ search_free:
 	if (ret)
 		goto err_remove_node;
 
+	RQ_BUG_ON(!list_empty(&vma->mm_list));
 	list_move_tail(&obj->global_list, &dev_priv->mm.bound_list);
 	list_add_tail(&vma->mm_list, &vma->vm->inactive_list);
 
 	return 0;
 
-
 err_remove_node:
-	drm_mm_remove_node(&vma->node);
 	vma->pin_count--;
+	RQ_BUG_ON(vma->pin_count != 0);
 	i915_vma_put(vma);
+	drm_mm_remove_node(&vma->node);
 err_unpin:
 	i915_gem_object_unpin_pages(obj);
 	return ret;
@@ -3523,9 +3530,11 @@ i915_gem_object_set_to_gtt_domain(struct drm_i915_gem_object *obj, bool write)
 
 	/* And bump the LRU for this access */
 	vma = i915_gem_obj_to_ggtt(obj);
-	if (vma && drm_mm_node_allocated(&vma->node) && !vma->active)
+	if (vma && vma->bound & GLOBAL_BIND && !vma->active) {
+		RQ_BUG_ON(list_empty(&vma->mm_list));
 		list_move_tail(&vma->mm_list,
 			       &to_i915(obj->base.dev)->gtt.base.inactive_list);
+	}
 
 	return 0;
 }
@@ -3887,8 +3896,7 @@ i915_vma_pin(struct i915_vma *vma, uint32_t alignment, uint64_t flags)
 	if (WARN_ON((flags & (PIN_MAPPABLE | PIN_GLOBAL)) == PIN_MAPPABLE))
 		return -EINVAL;
 
-	if (WARN_ON(vma->pin_count == DRM_I915_GEM_OBJECT_MAX_PIN_COUNT))
-		return -EBUSY;
+	RQ_BUG_ON(vma->vm->closed);
 
 	if (i915_vma_misplaced(vma, alignment, flags)) {
 		WARN(vma->pin_count,
@@ -3916,18 +3924,17 @@ i915_vma_pin(struct i915_vma *vma, uint32_t alignment, uint64_t flags)
 	if (flags & PIN_LOCAL)
 		bind |= LOCAL_BIND;
 	ret = vma->bind_vma(vma, vma->obj->cache_level, bind);
-	if (ret && --vma->pin_count == 0) {
-		drm_mm_remove_node(&vma->node);
-		i915_vma_put(vma);
-		i915_gem_object_unpin_pages(vma->obj);
+	if (ret) {
+		--vma->pin_count;
+		return ret;
 	}
 
-	WARN_ON(flags & PIN_MAPPABLE && !vma->obj->map_and_fenceable);
-
-	if (flags & PIN_MAPPABLE)
+	if (flags & PIN_MAPPABLE) {
+		WARN_ON(!vma->obj->map_and_fenceable);
 		vma->obj->pin_mappable = true;
+	}
 
-	return ret;
+	return 0;
 }
 
 int
@@ -4352,6 +4359,7 @@ void i915_gem_free_object(struct drm_gem_object *gem_obj)
 
 		vma->pin_count = 0;
 		BUG_ON(i915_vma_unbind(vma));
+		i915_vma_put(vma);
 	}
 	dev_priv->mm.interruptible = was_interruptible;
 	BUG_ON(obj->fence_reg != I915_FENCE_REG_NONE);

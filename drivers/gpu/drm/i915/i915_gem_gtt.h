@@ -146,18 +146,8 @@ struct i915_vma {
 		struct list_head engine_link;
 	} last_read[I915_NUM_ENGINES];
 
-	/**
-	 * How many users have pinned this object in GTT space. The following
-	 * users can each hold at most one reference: pwrite/pread, pin_ioctl
-	 * (via user_pin_count), execbuffer (objects are not allowed multiple
-	 * times for the same batchbuffer), and the framebuffer code. When
-	 * switching/pageflipping, the framebuffer code has at most two buffers
-	 * pinned per crtc.
-	 *
-	 * In the worst case this is 1 + 1 + 1 + 2*2 = 7. That would fit into 3
-	 * bits with absolutely no headroom. So use 4 bits. */
-	unsigned int pin_count:4;
-#define DRM_I915_GEM_OBJECT_MAX_PIN_COUNT 0xf
+	unsigned int pin_count;
+
 	/** Flags and address space this VMA is bound to */
 	unsigned int bound:4;
 #define LOCAL_BIND	(1<<0)

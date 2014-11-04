@@ -713,8 +713,8 @@ static int gen8_ppgtt_enable(struct drm_device *dev)
 			struct i915_gem_request *rq;
 			int ret;
 
-			rq = intel_engine_alloc_request(engine,
-							engine->default_context);
+			rq = i915_request_create(engine->default_context,
+						 engine);
 			if (IS_ERR(rq))
 				return PTR_ERR(rq);
 
@@ -1032,8 +1032,10 @@ int i915_ppgtt_init_hw(struct drm_device *dev)
 		ret = gen7_ppgtt_enable(dev);
 	else if (INTEL_INFO(dev)->gen >= 8)
 		ret = gen8_ppgtt_enable(dev);
-	else
+	else {
 		WARN_ON(1);
+		ret = -ENODEV;
+	}
 
 	return ret;
 }
@@ -1732,6 +1734,8 @@ void i915_global_gtt_cleanup(struct drm_device *dev)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct i915_address_space *vm = &dev_priv->gtt.base;
 
+	lockdep_assert_held(&dev->struct_mutex);
+
 	if (dev_priv->mm.aliasing_ppgtt) {
 		struct i915_hw_ppgtt *ppgtt = dev_priv->mm.aliasing_ppgtt;
 
@@ -2209,11 +2213,13 @@ void __i915_vma_free(struct kref *kref)
 {
 	struct i915_vma *vma = container_of(kref, typeof(*vma), kref);
 
+	WARN_ON(drm_mm_node_allocated(&vma->node));
+	WARN_ON(vma->bound);
 	WARN_ON(!list_empty(&vma->mm_list));
 	WARN_ON(!list_empty(&vma->exec_link));
+	WARN_ON(!list_empty(&vma->obj_link));
 
 	list_del(&vma->vm_link);
-	list_del(&vma->obj_link);
 	i915_vm_put(vma->vm);
 	kfree(vma);
 }
@@ -2225,8 +2231,8 @@ i915_gem_obj_get_vma(struct drm_i915_gem_object *obj,
 	struct i915_vma *vma;
 
 	vma = i915_gem_obj_to_vma(obj, vm);
-	if (vma)
-		return i915_vma_get(vma);
+	if (vma == NULL)
+		vma = __i915_vma_create(obj, vm);
 
-	return __i915_vma_create(obj, vm);
+	return i915_vma_get(vma);
 }

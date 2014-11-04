@@ -387,7 +387,7 @@ struct drm_i915_error_state {
 		bool waiting;
 		int hangcheck_score;
 		enum intel_engine_hangcheck_action hangcheck_action;
-		int num_requests;
+		int num_batches;
 
 		/* our own tracking of ring head and tail */
 		u32 cpu_ring_head;
@@ -435,7 +435,7 @@ struct drm_i915_error_state {
 			u32 breadcrumb[I915_NUM_ENGINES];
 			u32 complete;
 			u32 tag;
-		} *requests;
+		} *batches;
 
 		struct {
 			u32 gfx_mode;
@@ -1580,7 +1580,6 @@ struct drm_i915_private {
 
 	struct pci_dev *bridge_dev;
 	struct intel_engine_cs engine[I915_NUM_ENGINES];
-	struct intel_context *default_context;
 	struct drm_i915_gem_object *semaphore_obj;
 	uint32_t next_seqno;
 
@@ -2681,7 +2680,6 @@ int i915_gem_context_enable(struct drm_i915_private *dev_priv);
 void i915_gem_context_close(struct drm_device *dev, struct drm_file *file);
 int i915_request_switch_context(struct i915_gem_request *rq);
 void i915_request_switch_context__commit(struct i915_gem_request *rq);
-void i915_request_switch_context__undo(struct i915_gem_request *rq);
 struct intel_context *
 i915_gem_context_get(struct drm_i915_file_private *file_priv, u32 id);
 void __i915_gem_context_free(struct kref *ctx_ref);
@@ -2792,6 +2790,10 @@ struct i915_gem_request {
 
 	bool completed; /* kept separate for atomicity */
 };
+
+struct i915_gem_request * __must_check __attribute__((nonnull))
+i915_request_create(struct intel_context *ctx,
+		    struct intel_engine_cs *engine);
 
 static inline struct intel_engine_cs *i915_request_engine(struct i915_gem_request *rq)
 {

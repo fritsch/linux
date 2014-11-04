@@ -42,6 +42,7 @@
 
 struct eb_vmas {
 	struct list_head vmas;
+	struct i915_address_space *vm;
 	struct i915_vma *batch;
 	int and;
 	union {
@@ -114,7 +115,6 @@ static int
 eb_lookup_vmas(struct eb_vmas *eb,
 	       struct drm_i915_gem_exec_object2 *exec,
 	       const struct drm_i915_gem_execbuffer2 *args,
-	       struct i915_address_space *vm,
 	       struct drm_file *file)
 {
 	struct drm_i915_gem_object *obj;
@@ -164,7 +164,7 @@ eb_lookup_vmas(struct eb_vmas *eb,
 		 * from the (obj, vm) we don't run the risk of creating
 		 * duplicated vmas for the same vm.
 		 */
-		vma = i915_gem_obj_get_vma(obj, vm);
+		vma = i915_gem_obj_get_vma(obj, eb->vm);
 		if (IS_ERR(vma)) {
 			DRM_DEBUG("Failed to lookup VMA\n");
 			ret = PTR_ERR(vma);
@@ -239,8 +239,10 @@ __i915_vma_unreserve(struct i915_vma *vma)
 	if (entry->flags & __EXEC_OBJECT_HAS_FENCE)
 		i915_gem_object_unpin_fence(vma->obj);
 
-	if (entry->flags & __EXEC_OBJECT_HAS_PIN)
+	if (entry->flags & __EXEC_OBJECT_HAS_PIN) {
+		BUG_ON(vma->pin_count == 0);
 		vma->pin_count--;
+	}
 
 	entry->flags &= ~(__EXEC_OBJECT_HAS_FENCE | __EXEC_OBJECT_HAS_PIN);
 }
@@ -653,26 +655,23 @@ eb_vma_misplaced(struct i915_vma *vma)
 
 static int
 i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
-			    struct list_head *vmas,
+			    struct eb_vmas *eb,
 			    bool *need_relocs)
 {
 	struct drm_i915_gem_object *obj;
 	struct i915_vma *vma;
-	struct i915_address_space *vm;
 	struct list_head ordered_vmas;
 	bool has_fenced_gpu_access = INTEL_INFO(engine->i915)->gen < 4;
 	int retry;
 
 	i915_gem_retire_requests__engine(engine);
 
-	vm = list_first_entry(vmas, struct i915_vma, exec_link)->vm;
-
 	INIT_LIST_HEAD(&ordered_vmas);
-	while (!list_empty(vmas)) {
+	while (!list_empty(&eb->vmas)) {
 		struct drm_i915_gem_exec_object2 *entry;
 		bool need_fence, need_mappable;
 
-		vma = list_first_entry(vmas, struct i915_vma, exec_link);
+		vma = list_first_entry(&eb->vmas, struct i915_vma, exec_link);
 		obj = vma->obj;
 		entry = vma->exec_entry;
 
@@ -692,7 +691,7 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 		obj->base.pending_read_domains = I915_GEM_GPU_DOMAINS & ~I915_GEM_DOMAIN_COMMAND;
 		obj->base.pending_write_domain = 0;
 	}
-	list_splice(&ordered_vmas, vmas);
+	list_splice(&ordered_vmas, &eb->vmas);
 
 	/* Attempt to pin all of the buffers into the GTT.
 	 * This is done in 3 phases:
@@ -711,7 +710,7 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 		int ret = 0;
 
 		/* Unbind any ill-fitting objects or pin. */
-		list_for_each_entry(vma, vmas, exec_link) {
+		list_for_each_entry(vma, &eb->vmas, exec_link) {
 			if (!drm_mm_node_allocated(&vma->node))
 				continue;
 
@@ -724,7 +723,7 @@ i915_gem_execbuffer_reserve(struct intel_engine_cs *engine,
 		}
 
 		/* Bind fresh objects */
-		list_for_each_entry(vma, vmas, exec_link) {
+		list_for_each_entry(vma, &eb->vmas, exec_link) {
 			if (drm_mm_node_allocated(&vma->node))
 				continue;
 
@@ -738,10 +737,10 @@ err:
 			return ret;
 
 		/* Decrement pin count for bound objects */
-		list_for_each_entry(vma, vmas, exec_link)
+		list_for_each_entry(vma, &eb->vmas, exec_link)
 			__i915_vma_unreserve(vma);
 
-		ret = i915_gem_evict_vm(vm, true);
+		ret = i915_gem_evict_vm(eb->vm, true);
 		if (ret)
 			return ret;
 	} while (1);
@@ -756,14 +755,11 @@ i915_gem_execbuffer_relocate_slow(struct drm_i915_private *i915,
 				  struct drm_i915_gem_exec_object2 *exec)
 {
 	struct drm_i915_gem_relocation_entry *reloc;
-	struct i915_address_space *vm;
 	struct i915_vma *vma;
 	bool need_relocs;
 	int *reloc_offset;
 	int i, total, ret;
 	unsigned count = args->buffer_count;
-
-	vm = list_first_entry(&eb->vmas, struct i915_vma, exec_link)->vm;
 
 	/* We may process another execbuffer during the unlock... */
 	while (!list_empty(&eb->vmas)) {
@@ -832,12 +828,12 @@ i915_gem_execbuffer_relocate_slow(struct drm_i915_private *i915,
 
 	/* reacquire the objects */
 	eb_reset(eb);
-	ret = eb_lookup_vmas(eb, exec, args, vm, file);
+	ret = eb_lookup_vmas(eb, exec, args, file);
 	if (ret)
 		goto err;
 
 	need_relocs = (args->flags & I915_EXEC_NO_RELOC) == 0;
-	ret = i915_gem_execbuffer_reserve(engine, &eb->vmas, &need_relocs);
+	ret = i915_gem_execbuffer_reserve(engine, eb, &need_relocs);
 	if (ret)
 		goto err;
 
@@ -1116,10 +1112,11 @@ submit_execbuf(struct intel_engine_cs *engine,
 	       struct intel_context *ctx,
 	       struct drm_i915_gem_execbuffer2 *args,
 	       struct eb_vmas *eb,
-	       u64 exec_start, u32 flags)
+	       u32 flags)
 {
 	struct drm_clip_rect *cliprects = NULL;
 	struct i915_gem_request *rq = NULL;
+	u64 exec_start;
 	int i, ret;
 
 	if (args->num_cliprects != 0) {
@@ -1169,7 +1166,7 @@ submit_execbuf(struct intel_engine_cs *engine,
 		}
 	}
 
-	rq = intel_engine_alloc_request(engine, ctx);
+	rq = i915_request_create(ctx, engine);
 	if (IS_ERR(rq)) {
 		ret = PTR_ERR(rq);
 		goto out_cliprects;
@@ -1188,6 +1185,38 @@ submit_execbuf(struct intel_engine_cs *engine,
 		if (ret)
 			goto out_rq;
 	}
+
+	/* snb/ivb/vlv conflate the "batch in ppgtt" bit with the "non-secure
+	 * batch" bit. Hence we need to pin secure batches into the global gtt.
+	 * hsw should have this fixed, but bdw mucks it up again.
+	 */
+	exec_start = args->batch_start_offset;
+	if (flags & I915_DISPATCH_SECURE && !i915_is_ggtt(eb->vm)) {
+		struct i915_vma *ggtt;
+
+		/*
+		 * So on first glance it looks freaky that we pin the batch here
+		 * outside of the reservation loop. But:
+		 * - The batch is already pinned into the relevant ppgtt, so we
+		 *   already have the backing storage fully allocated.
+		 * - No other BO uses the global gtt (well contexts, but meh),
+		 *   so we don't really have issues with mutliple objects not
+		 *   fitting due to fragmentation.
+		 * So this is actually safe.
+		 */
+		ggtt = i915_gem_obj_get_ggtt(eb->batch->obj);
+		ret = i915_vma_pin(ggtt, 0, PIN_GLOBAL);
+		if (ret) {
+			i915_vma_put(ggtt);
+			goto out_rq;
+		}
+
+		drm_gem_object_reference(&eb->batch->obj->base);
+		i915_request_add_vma(rq, ggtt, 0);
+
+		exec_start += ggtt->node.start;
+	} else
+		exec_start += eb->batch->node.start;
 
 	if (cliprects) {
 		for (i = 0; i < args->num_cliprects; i++) {
@@ -1215,14 +1244,6 @@ submit_execbuf(struct intel_engine_cs *engine,
 	ret = i915_request_commit(rq);
 	if (ret)
 		goto out_rq;
-
-	i915_queue_hangcheck(rq->i915->dev);
-
-	cancel_delayed_work_sync(&rq->i915->mm.idle_work);
-	mod_delayed_work(rq->i915->wq,
-			 &rq->i915->mm.retire_work,
-			 round_jiffies_up_relative(HZ));
-	intel_mark_busy(rq->i915->dev);
 
 out_rq:
 	i915_request_put(rq);
@@ -1269,10 +1290,7 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 	struct eb_vmas *eb;
 	struct intel_engine_cs *engine;
 	struct intel_context *ctx;
-	struct i915_address_space *vm;
 	const u32 ctx_id = i915_execbuffer2_get_context_id(*args);
-	u64 exec_start = args->batch_start_offset;
-	struct drm_i915_gem_object *batch;
 	u32 flags;
 	int ret;
 	bool need_relocs;
@@ -1339,11 +1357,6 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 
 	i915_gem_context_reference(ctx);
 
-	if (ctx->ppgtt)
-		vm = &ctx->ppgtt->base;
-	else
-		vm = &dev_priv->gtt.base;
-
 	eb = eb_create(args);
 	if (eb == NULL) {
 		i915_gem_context_unreference(ctx);
@@ -1351,15 +1364,16 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 		ret = -ENOMEM;
 		goto pre_mutex_err;
 	}
+	eb->vm = ctx->ppgtt ? &ctx->ppgtt->base : &dev_priv->gtt.base;
 
 	/* Look up object handles */
-	ret = eb_lookup_vmas(eb, exec, args, vm, file);
+	ret = eb_lookup_vmas(eb, exec, args, file);
 	if (ret)
 		goto err;
 
 	/* Move the objects en-masse into the GTT, evicting if necessary. */
 	need_relocs = (args->flags & I915_EXEC_NO_RELOC) == 0;
-	ret = i915_gem_execbuffer_reserve(engine, &eb->vmas, &need_relocs);
+	ret = i915_gem_execbuffer_reserve(engine, eb, &need_relocs);
 	if (ret)
 		goto err;
 
@@ -1377,46 +1391,14 @@ i915_gem_do_execbuffer(struct drm_i915_private *dev_priv, void *data,
 	}
 
 	/* Set the pending read domains for the batch buffer to COMMAND */
-	batch = eb->batch->obj;
-	if (batch->base.pending_write_domain) {
+	if (eb->batch->obj->base.pending_write_domain) {
 		DRM_DEBUG("Attempting to use self-modifying batch buffer\n");
 		ret = -EINVAL;
 		goto err;
 	}
-	batch->base.pending_read_domains |= I915_GEM_DOMAIN_COMMAND;
+	eb->batch->obj->base.pending_read_domains |= I915_GEM_DOMAIN_COMMAND;
 
-	/* snb/ivb/vlv conflate the "batch in ppgtt" bit with the "non-secure
-	 * batch" bit. Hence we need to pin secure batches into the global gtt.
-	 * hsw should have this fixed, but bdw mucks it up again. */
-	if (flags & I915_DISPATCH_SECURE) {
-		/*
-		 * So on first glance it looks freaky that we pin the batch here
-		 * outside of the reservation loop. But:
-		 * - The batch is already pinned into the relevant ppgtt, so we
-		 *   already have the backing storage fully allocated.
-		 * - No other BO uses the global gtt (well contexts, but meh),
-		 *   so we don't really have issues with mutliple objects not
-		 *   fitting due to fragmentation.
-		 * So this is actually safe.
-		 */
-		ret = i915_gem_object_ggtt_pin(batch, 0, 0);
-		if (ret)
-			goto err;
-
-		exec_start += i915_gem_obj_ggtt_offset(batch);
-	} else
-		exec_start += i915_gem_obj_offset(batch, vm);
-
-	ret = submit_execbuf(engine, ctx, args, eb, exec_start, flags);
-
-	/*
-	 * FIXME: We crucially rely upon the active tracking for the (ppgtt)
-	 * batch vma for correctness. For less ugly and less fragility this
-	 * needs to be adjusted to also track the ggtt batch vma properly as
-	 * active.
-	 */
-	if (flags & I915_DISPATCH_SECURE)
-		i915_gem_object_ggtt_unpin(batch);
+	ret = submit_execbuf(engine, ctx, args, eb, flags);
 err:
 	/* the request owns the ref now */
 	i915_gem_context_unreference(ctx);

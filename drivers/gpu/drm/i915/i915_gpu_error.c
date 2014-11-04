@@ -476,20 +476,20 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 			print_error_obj(m, obj);
 		}
 
-		if (ering->num_requests) {
-			err_printf(m, "%s --- %d requests\n",
-				   name, ering->num_requests);
-			for (j = 0; j < ering->num_requests; j++) {
+		if (ering->num_batches) {
+			err_printf(m, "%s --- %d batches\n",
+				   name, ering->num_batches);
+			for (j = 0; j < ering->num_batches; j++) {
 				err_printf(m, "  pid %ld, seqno 0x%08x, tag 0x%04x, emitted %dms ago (at %ld jiffies), head 0x%08x, tail 0x%08x, batch 0x%08x, complete? %d\n",
-					   ering->requests[j].pid,
-					   ering->requests[j].seqno,
-					   ering->requests[j].tag,
-					   jiffies_to_usecs(jiffies - ering->requests[j].jiffies) / 1000,
-					   ering->requests[j].jiffies,
-					   ering->requests[j].head,
-					   ering->requests[j].tail,
-					   ering->requests[j].batch,
-					   ering->requests[j].complete);
+					   ering->batches[j].pid,
+					   ering->batches[j].seqno,
+					   ering->batches[j].tag,
+					   jiffies_to_usecs(jiffies - ering->batches[j].jiffies) / 1000,
+					   ering->batches[j].jiffies,
+					   ering->batches[j].head,
+					   ering->batches[j].tail,
+					   ering->batches[j].batch,
+					   ering->batches[j].complete);
 			}
 		}
 
@@ -586,7 +586,7 @@ static void i915_error_state_free(struct kref *error_ref)
 		i915_error_object_free(error->ring[i].ringbuffer);
 		i915_error_object_free(error->ring[i].hws_page);
 		i915_error_object_free(error->ring[i].ctx);
-		kfree(error->ring[i].requests);
+		kfree(error->ring[i].batches);
 	}
 
 	i915_error_object_free(error->semaphore_obj);
@@ -668,19 +668,11 @@ i915_error_object_create(struct drm_i915_private *dev_priv,
 		    reloc_offset + num_pages * PAGE_SIZE <= dev_priv->gtt.mappable_end);
 
 	/* Cannot access stolen address directly, try to use the aperture */
-	if (src->stolen) {
-		use_ggtt = true;
-
-		if (!(vma->bound & GLOBAL_BIND))
-			goto unwind;
-
-		reloc_offset = i915_gem_obj_ggtt_offset(src);
-		if (reloc_offset + num_pages * PAGE_SIZE > dev_priv->gtt.mappable_end)
-			goto unwind;
-	}
+	if (src->stolen && !use_ggtt)
+		goto unwind;
 
 	/* Cannot access snooped pages through the aperture */
-	if (use_ggtt && src->cache_level != I915_CACHE_NONE && !HAS_LLC(dev_priv->dev))
+	if (use_ggtt && src->cache_level != I915_CACHE_NONE && !HAS_LLC(dev_priv))
 		goto unwind;
 
 	if (!use_ggtt)
@@ -704,7 +696,8 @@ i915_error_object_create(struct drm_i915_private *dev_priv,
 			io_mapping_unmap_atomic(s);
 		} else {
 			s = kmap_atomic(i915_gem_object_get_page(src, reloc_offset >> PAGE_SHIFT));
-			drm_clflush_virt_range(s, PAGE_SIZE);
+			if (!HAS_LLC(dev_priv))
+				drm_clflush_virt_range(s, PAGE_SIZE);
 			ret = compress_page(&zstream, s, dst);
 			kunmap_atomic(s);
 		}
@@ -1122,14 +1115,14 @@ static void i915_gem_record_rings(struct drm_device *dev,
 
 		count = 0;
 		list_for_each_entry(rq, &engine->requests, engine_link)
-			count++;
+			count += rq->batch != NULL;
 
-		error->ring[i].num_requests = count;
-		error->ring[i].requests =
-			kcalloc(count, sizeof(*error->ring[i].requests),
+		error->ring[i].num_batches = count;
+		error->ring[i].batches =
+			kcalloc(count, sizeof(struct drm_i915_error_request),
 				GFP_ATOMIC);
-		if (error->ring[i].requests == NULL) {
-			error->ring[i].num_requests = 0;
+		if (error->ring[i].batches == NULL) {
+			error->ring[i].num_batches = 0;
 			continue;
 		}
 
@@ -1138,14 +1131,18 @@ static void i915_gem_record_rings(struct drm_device *dev,
 			struct drm_i915_error_request *erq;
 			struct task_struct *task;
 
-			erq = &error->ring[i].requests[count++];
+			if (rq->batch == NULL)
+				continue;
+
+			if (count == error->ring[i].num_batches)
+				break;
+
+			erq = &error->ring[i].batches[count++];
 			erq->seqno = rq->seqno;
 			erq->jiffies = rq->emitted_jiffies;
 			erq->head = rq->head;
 			erq->tail = rq->tail;
-			erq->batch = 0;
-			if (rq->batch)
-				erq->batch = rq->batch->node.start;
+			erq->batch = rq->batch->node.start;
 			memcpy(erq->breadcrumb, rq->breadcrumb, sizeof(rq->breadcrumb));
 			erq->complete = i915_request_complete(rq);
 			erq->tag = rq->tag;

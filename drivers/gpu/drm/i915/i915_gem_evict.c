@@ -292,18 +292,10 @@ int
 i915_gem_evict_everything(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct i915_address_space *vm, *v;
-	bool lists_empty = true;
+	struct list_head still_in_list;
 	int ret;
 
-	list_for_each_entry(vm, &dev_priv->vm_list, global_link) {
-		lists_empty = (list_empty(&vm->inactive_list) &&
-			       list_empty(&vm->active_list));
-		if (!lists_empty)
-			lists_empty = false;
-	}
-
-	if (lists_empty)
+	if (list_empty(&dev_priv->mm.bound_list))
 		return -ENOSPC;
 
 	trace_i915_gem_evict_everything(dev);
@@ -319,11 +311,32 @@ i915_gem_evict_everything(struct drm_device *dev)
 	i915_gem_retire_requests(dev);
 
 	/* Having flushed everything, unbind() should never raise an error */
-	list_for_each_entry_safe(vm, v, &dev_priv->vm_list, global_link) {
-		i915_vm_get(vm);
-		WARN_ON(i915_gem_evict_vm(vm, false));
-		i915_vm_put(vm);
+	INIT_LIST_HEAD(&still_in_list);
+	while (!list_empty(&dev_priv->mm.bound_list)) {
+		struct list_head vma_list;
+		struct drm_i915_gem_object *obj;
+
+		obj = list_first_entry(&dev_priv->mm.bound_list,
+				       typeof(*obj), global_list);
+		list_move_tail(&obj->global_list, &still_in_list);
+
+		drm_gem_object_reference(&obj->base);
+
+		INIT_LIST_HEAD(&vma_list);
+		while (!list_empty(&obj->vma_list)) {
+			struct i915_vma *vma;
+
+			vma = list_first_entry(&obj->vma_list,
+					       typeof(*vma), obj_link);
+			list_move_tail(&vma->obj_link, &vma_list);
+			if (i915_vma_unbind(vma))
+				break;
+		}
+		list_splice(&vma_list, &obj->vma_list);
+
+		drm_gem_object_unreference(&obj->base);
 	}
+	list_splice(&still_in_list, &dev_priv->mm.bound_list);
 
 	return 0;
 }

@@ -311,14 +311,8 @@ gen7_render_emit_flush(struct i915_gem_request *rq, u32 flags)
 		if (ret)
 			return ret;
 	}
-	if (flags & I915_COMMAND_BARRIER) {
-		/*
-		 * Ensure that any following seqno writes only happen
-		 * when the render cache is indeed flushed.
-		 */
-		cmd |= PIPE_CONTROL_QW_WRITE | PIPE_CONTROL_GLOBAL_GTT_IVB;
-		cmd |= PIPE_CONTROL_FLUSH_ENABLE;
-	}
+	if ((flags & (I915_COMMAND_BARRIER | I915_FLUSH_CACHES)) == I915_COMMAND_BARRIER)
+		cmd |= PIPE_CONTROL_STALL_AT_SCOREBOARD;
 
 	ring = intel_ring_begin(rq, 4);
 	if (IS_ERR(ring))
@@ -467,7 +461,14 @@ static bool engine_stop(struct intel_engine_cs *engine)
 
 static int engine_suspend(struct intel_engine_cs *engine)
 {
-	return engine_stop(engine) ? 0 : -EIO;
+	struct intel_ringbuffer *ring;
+
+	if (!engine_stop(engine))
+		return -EIO;
+
+	ring = engine->default_context->ring[engine->id].ring;
+	i915_gem_object_ggtt_unpin(ring->obj);
+	return 0;
 }
 
 static int enable_status_page(struct intel_engine_cs *engine)
@@ -551,65 +552,19 @@ static int enable_status_page(struct intel_engine_cs *engine)
 	return ret;
 }
 
-static struct intel_ringbuffer *
-engine_get_ring(struct intel_engine_cs *engine,
-		struct intel_context *ctx)
-{
-	struct drm_i915_private *dev_priv = engine->i915;
-	struct intel_ringbuffer *ring;
-	int ret = 0;
-
-	ring = engine->legacy_ring;
-	if (ring)
-		return ring;
-
-	ring = intel_engine_alloc_ring(engine, ctx, 32 * PAGE_SIZE);
-	if (IS_ERR(ring)) {
-		DRM_ERROR("Failed to allocate ringbuffer for %s: %ld\n", engine->name, PTR_ERR(ring));
-		return ERR_CAST(ring);
-	}
-
-	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
-	if (!engine_stop(engine)) {
-		/* G45 ring initialization often fails to reset head to zero */
-		DRM_DEBUG_KMS("%s head not reset to zero "
-			      "ctl %08x head %08x tail %08x start %08x\n",
-			      engine->name,
-			      I915_READ_CTL(engine),
-			      I915_READ_HEAD(engine),
-			      I915_READ_TAIL(engine),
-			      I915_READ_START(engine));
-		if (!engine_stop(engine)) {
-			DRM_ERROR("failed to set %s head to zero "
-				  "ctl %08x head %08x tail %08x start %08x\n",
-				  engine->name,
-				  I915_READ_CTL(engine),
-				  I915_READ_HEAD(engine),
-				  I915_READ_TAIL(engine),
-				  I915_READ_START(engine));
-			ret = -EIO;
-		}
-	}
-	gen6_gt_force_wake_put(dev_priv, FORCEWAKE_ALL);
-
-	if (ret == 0) {
-		engine->legacy_ring = ring;
-	} else {
-		intel_ring_free(ring);
-		ring = ERR_PTR(ret);
-	}
-
-	return ring;
-}
-
 static int engine_resume(struct intel_engine_cs *engine)
 {
 	struct drm_i915_private *dev_priv = engine->i915;
-	struct intel_ringbuffer *ring = engine->legacy_ring;
+	struct intel_ringbuffer *ring;
 	int retry = 3, ret;
 
+	ring = engine->default_context->ring[engine->id].ring;
 	if (WARN_ON(ring == NULL))
 		return -ENODEV;
+
+	ret = i915_gem_object_ggtt_pin(ring->obj, 0, 0);
+	if (ret)
+		return ret;
 
 	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
 
@@ -657,24 +612,6 @@ reset:
 
 	gen6_gt_force_wake_put(dev_priv, FORCEWAKE_ALL);
 	return ret;
-}
-
-static void engine_put_ring(struct intel_ringbuffer *ring,
-			    struct intel_context *ctx)
-{
-	if (ring->last_context == ctx) {
-		struct i915_gem_request *rq;
-		int ret = -EINVAL;
-
-		rq = intel_engine_alloc_request(ring->engine,
-						ring->engine->default_context);
-		if (!IS_ERR(rq)) {
-			ret = i915_request_commit(rq);
-			i915_request_put(rq);
-		}
-		if (WARN_ON(ret))
-			ring->last_context = ring->engine->default_context;
-	}
 }
 
 static int engine_add_request(struct i915_gem_request *rq)
@@ -919,11 +856,21 @@ static void cleanup_status_page(struct intel_engine_cs *engine)
 
 static void engine_cleanup(struct intel_engine_cs *engine)
 {
-	if (engine->legacy_ring)
-		intel_ring_free(engine->legacy_ring);
-
 	cleanup_status_page(engine);
 	i915_cmd_parser_fini_engine(engine);
+}
+
+static bool engine_is_idle(struct intel_engine_cs *engine)
+{
+	struct drm_i915_private *dev_priv = engine->i915;
+	return I915_READ_MODE(engine) & MODE_IDLE;
+}
+
+static bool i8xx_is_idle(struct intel_engine_cs *engine)
+{
+	struct drm_i915_private *dev_priv = engine->i915;
+	return (I915_READ_HEAD(engine) == I915_READ(RING_ACTHD(engine->mmio_base)) &&
+		I915_READ_HEAD(engine) == I915_READ_TAIL(engine));
 }
 
 static void render_cleanup(struct intel_engine_cs *engine)
@@ -1467,13 +1414,44 @@ static int setup_phys_status_page(struct intel_engine_cs *engine)
 void intel_ring_free(struct intel_ringbuffer *ring)
 {
 	if (ring->obj) {
-		iounmap(ring->virtual_start);
-		i915_gem_object_ggtt_unpin(ring->obj);
+		if (ring->iomap) {
+			i915_gem_object_ggtt_unpin(ring->obj);
+			iounmap(ring->virtual_start);
+		} else
+			vunmap(ring->virtual_start);
+		i915_gem_object_unpin_pages(ring->obj);
 		drm_gem_object_unreference(&ring->obj->base);
 	}
 
 	list_del(&ring->engine_link);
 	kfree(ring);
+}
+
+static void *obj_vmap(struct drm_i915_gem_object *obj)
+{
+	struct page **pages;
+	struct sg_page_iter sg_iter;
+	void *vaddr;
+	int i;
+
+	if (!HAS_LLC(obj->base.dev))
+		return NULL;
+
+	if (obj->base.filp == NULL)
+		return NULL;
+
+	pages = drm_malloc_ab(obj->base.size >> PAGE_SHIFT, sizeof(*pages));
+	if (pages == NULL)
+		return NULL;
+
+	i = 0;
+	for_each_sg_page(obj->pages->sgl, &sg_iter, obj->pages->nents, 0)
+		pages[i++] = sg_page_iter_page(&sg_iter);
+
+	vaddr = vmap(pages, i, 0, PAGE_KERNEL);
+	drm_free_large(pages);
+
+	return vaddr;
 }
 
 struct intel_ringbuffer *
@@ -1498,7 +1476,9 @@ intel_engine_alloc_ring(struct intel_engine_cs *engine,
 	ring->engine = engine;
 	ring->ctx = ctx;
 
-	obj = i915_gem_object_create_stolen(i915->dev, size);
+	obj = NULL;
+	if (!HAS_LLC(i915))
+		obj = i915_gem_object_create_stolen(i915->dev, size);
 	if (obj == NULL)
 		obj = i915_gem_alloc_object(i915->dev, size);
 	if (obj == NULL)
@@ -1507,25 +1487,37 @@ intel_engine_alloc_ring(struct intel_engine_cs *engine,
 	/* mark ring buffers as read-only from GPU side by default */
 	obj->gt_ro = 1;
 
-	ret = i915_gem_object_ggtt_pin(obj, PAGE_SIZE, PIN_MAPPABLE);
+	ret = i915_gem_object_get_pages(obj);
 	if (ret) {
-		DRM_ERROR("failed pin ringbuffer into GGTT\n");
+		DRM_ERROR("failed to get ringbuffer pages\n");
 		goto err_unref;
 	}
 
-	ret = i915_gem_object_set_to_gtt_domain(obj, true);
-	if (ret) {
-		DRM_ERROR("failed mark ringbuffer for GTT writes\n");
-		goto err_unpin;
-	}
+	i915_gem_object_pin_pages(obj);
 
-	ring->virtual_start =
-		ioremap_wc(i915->gtt.mappable_base + i915_gem_obj_ggtt_offset(obj),
-			   size);
+	ring->virtual_start = obj_vmap(obj);
 	if (ring->virtual_start == NULL) {
-		DRM_ERROR("failed to map ringbuffer through GTT\n");
-		ret = -EINVAL;
-		goto err_unpin;
+		ret = i915_gem_object_ggtt_pin(obj, PAGE_SIZE, PIN_MAPPABLE);
+		if (ret) {
+			DRM_ERROR("failed pin ringbuffer into GGTT\n");
+			goto err_unref;
+		}
+
+		ret = i915_gem_object_set_to_gtt_domain(obj, true);
+		if (ret) {
+			DRM_ERROR("failed mark ringbuffer for GTT writes\n");
+			goto err_unpin;
+		}
+
+		ring->virtual_start =
+			ioremap_wc(i915->gtt.mappable_base + i915_gem_obj_ggtt_offset(obj),
+					size);
+		if (ring->virtual_start == NULL) {
+			DRM_ERROR("failed to map ringbuffer through GTT\n");
+			ret = -EINVAL;
+			goto err_unpin;
+		}
+		ring->iomap = true;
 	}
 
 	ring->obj = obj;
@@ -1551,6 +1543,7 @@ intel_engine_alloc_ring(struct intel_engine_cs *engine,
 err_unpin:
 	i915_gem_object_ggtt_unpin(obj);
 err_unref:
+	i915_gem_object_unpin_pages(obj);
 	drm_gem_object_unreference(&obj->base);
 	return ERR_PTR(ret);
 }
@@ -1558,6 +1551,178 @@ err_unref:
 static void
 nop_irq_barrier(struct intel_engine_cs *engine)
 {
+}
+
+static size_t get_context_alignment(struct drm_i915_private *i915)
+{
+	/* This is a HW constraint. The value below is the largest known
+	 * requirement I've seen in a spec to date, and that was a
+	 * workaround for a non-shipping part. It should be safe to
+	 * decrease this, but it's more future proof as is.
+	 */
+	if (INTEL_INFO(i915)->gen == 6)
+		return 64 << 10;
+
+	return 0;
+}
+
+static struct intel_ringbuffer *
+engine_get_ring(struct intel_engine_cs *engine)
+{
+	struct drm_i915_private *dev_priv = engine->i915;
+	struct intel_ringbuffer *ring;
+	int ret;
+
+	ring = engine->default_context->ring[engine->id].ring;
+	if (ring)
+		return ring;
+
+	if (I915_NEED_GFX_HWS(dev_priv)) {
+		ret = setup_status_page(engine);
+	} else {
+		BUG_ON(engine->id != RCS);
+		ret = setup_phys_status_page(engine);
+	}
+	if (ret)
+		return ERR_PTR(ret);
+
+	ring = intel_engine_alloc_ring(engine, NULL, 32 * PAGE_SIZE);
+	if (IS_ERR(ring)) {
+		DRM_ERROR("Failed to allocate ringbuffer for %s: %ld\n", engine->name, PTR_ERR(ring));
+		return ring;
+	}
+
+	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
+	if (!engine_stop(engine)) {
+		/* G45 ring initialization often fails to reset head to zero */
+		DRM_DEBUG_KMS("%s head not reset to zero "
+			      "ctl %08x head %08x tail %08x start %08x\n",
+			      engine->name,
+			      I915_READ_CTL(engine),
+			      I915_READ_HEAD(engine),
+			      I915_READ_TAIL(engine),
+			      I915_READ_START(engine));
+		if (!engine_stop(engine)) {
+			DRM_ERROR("failed to set %s head to zero "
+				  "ctl %08x head %08x tail %08x start %08x\n",
+				  engine->name,
+				  I915_READ_CTL(engine),
+				  I915_READ_HEAD(engine),
+				  I915_READ_TAIL(engine),
+				  I915_READ_START(engine));
+			ret = -EIO;
+		}
+	}
+	gen6_gt_force_wake_put(dev_priv, FORCEWAKE_ALL);
+	if (ret) {
+		intel_ring_free(ring);
+		return ERR_PTR(ret);
+	}
+
+	return engine->default_context->ring[engine->id].ring = ring;
+}
+
+static struct intel_ringbuffer *
+engine_pin_context(struct intel_engine_cs *engine,
+		   struct intel_context *ctx)
+{
+	struct intel_ringbuffer *ring;
+	int ret;
+
+	if (ctx->ring[engine->id].state) {
+		struct drm_i915_gem_object *obj = ctx->ring[engine->id].state;
+
+		ret = i915_gem_object_ggtt_pin(obj,
+					       get_context_alignment(engine->i915),
+					       0);
+		if (ret)
+			goto err;
+
+		/*
+		 * Clear this page out of any CPU caches for coherent swap-in/out. Note
+		 * that thanks to write = false in this call and us not setting any gpu
+		 * write domains when putting a context object onto the active list
+		 * (when switching away from it), this won't block.
+		 *
+		 * XXX: We need a real interface to do this instead of trickery.
+		 */
+		ret = i915_gem_object_set_to_gtt_domain(obj, false);
+		if (ret)
+			goto err_ctx;
+	}
+
+	if (ctx->ppgtt) {
+		ret = i915_gem_object_ggtt_pin(ctx->ppgtt->state,
+					       ctx->ppgtt->alignment,
+					       0);
+		if (ret)
+			goto err_ctx;
+	}
+
+	ring = engine_get_ring(engine);
+	if (IS_ERR(ring)) {
+		ret = PTR_ERR(ring);
+		goto err_mm;
+	}
+
+	return ring;
+
+err_mm:
+	if (ctx->ppgtt)
+		i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
+err_ctx:
+	if (ctx->ring[engine->id].state)
+		i915_gem_object_ggtt_unpin(ctx->ring[engine->id].state);
+err:
+	return ERR_PTR(ret);
+}
+
+static struct drm_i915_gem_object *
+rq_add_ggtt(struct i915_gem_request *rq,
+	    struct drm_i915_gem_object *obj)
+{
+	obj->base.pending_read_domains = I915_GEM_DOMAIN_INSTRUCTION;
+	/* obj is kept alive until the next request by its active ref */
+	drm_gem_object_reference(&obj->base);
+	i915_request_add_vma(rq, i915_gem_obj_get_ggtt(obj), 0);
+
+	return obj;
+}
+
+static void engine_add_context(struct i915_gem_request *rq,
+			       struct intel_context *ctx)
+{
+	if (ctx->ring[rq->engine->id].state)
+		/* As long as MI_SET_CONTEXT is serializing, ie. it flushes the
+		 * whole damn pipeline, we don't need to explicitly mark the
+		 * object dirty. The only exception is that the context must be
+		 * correct in case the object gets swapped out. Ideally we'd be
+		 * able to defer doing this until we know the object would be
+		 * swapped, but there is no way to do that yet.
+		 */
+		rq_add_ggtt(rq, ctx->ring[rq->engine->id].state)->dirty = 1;
+
+	if (ctx->ppgtt)
+		rq_add_ggtt(rq, ctx->ppgtt->state);
+}
+
+static void
+engine_unpin_context(struct intel_engine_cs *engine,
+		     struct intel_context *ctx)
+{
+	if (ctx->ppgtt)
+		i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
+	if (ctx->ring[engine->id].state)
+		i915_gem_object_ggtt_unpin(ctx->ring[engine->id].state);
+}
+
+static void engine_free_context(struct intel_engine_cs *engine,
+				struct intel_context *ctx)
+{
+	if (ctx->ring[engine->id].state)
+		drm_gem_object_unreference(&ctx->ring[engine->id].state->base);
+	if (ctx == engine->default_context)
+		intel_ring_free(ctx->ring[engine->id].ring);
 }
 
 static int intel_engine_init(struct intel_engine_cs *engine,
@@ -1581,30 +1746,25 @@ static int intel_engine_init(struct intel_engine_cs *engine,
 	engine->suspend = engine_suspend;
 	engine->resume = engine_resume;
 	engine->cleanup = engine_cleanup;
+	engine->is_idle = engine_is_idle;
 
 	engine->irq_barrier = nop_irq_barrier;
 	engine->emit_breadcrumb = emit_breadcrumb;
 
 	engine->power_domains = FORCEWAKE_ALL;
-	engine->get_ring = engine_get_ring;
-	engine->put_ring = engine_put_ring;
 
 	engine->semaphore.wait = NULL;
+
+	engine->pin_context = engine_pin_context;
+	engine->add_context = engine_add_context;
+	engine->unpin_context = engine_unpin_context;
+	engine->free_context = engine_free_context;
 
 	engine->add_request = engine_add_request;
 	engine->write_tail = ring_write_tail;
 	engine->is_complete = engine_rq_is_complete;
 
 	init_waitqueue_head(&engine->irq_queue);
-
-	if (I915_NEED_GFX_HWS(i915)) {
-		ret = setup_status_page(engine);
-	} else {
-		BUG_ON(engine->id != RCS);
-		ret = setup_phys_status_page(engine);
-	}
-	if (ret)
-		return ret;
 
 	ret = i915_cmd_parser_init_engine(engine);
 	if (ret)
@@ -1915,6 +2075,7 @@ int intel_init_render_engine(struct drm_i915_private *dev_priv)
 		if (IS_GEN2(dev_priv)) {
 			engine->irq_get = i8xx_irq_get;
 			engine->irq_put = i8xx_irq_put;
+			engine->is_idle = i8xx_is_idle;
 		} else {
 			engine->irq_get = i9xx_irq_get;
 			engine->irq_put = i9xx_irq_put;
@@ -2165,7 +2326,7 @@ intel_engine_flush(struct intel_engine_cs *engine,
 	struct i915_gem_request *rq;
 	int ret;
 
-	rq = intel_engine_alloc_request(engine, ctx);
+	rq = i915_request_create(ctx, engine);
 	if (IS_ERR(rq))
 		return PTR_ERR(rq);
 
@@ -2184,75 +2345,6 @@ int intel_engine_sync(struct intel_engine_cs *engine)
 		return 0;
 
 	return i915_request_wait(engine->last_request);
-}
-
-static u32
-next_seqno(struct drm_i915_private *i915)
-{
-	/* reserve 0 for non-seqno */
-	if (++i915->next_seqno == 0)
-		++i915->next_seqno;
-	return i915->next_seqno;
-}
-
-struct i915_gem_request *
-intel_engine_alloc_request(struct intel_engine_cs *engine,
-			   struct intel_context *ctx)
-{
-	struct intel_ringbuffer *ring;
-	struct i915_gem_request *rq;
-	int ret, n;
-
-	ring = ctx->ring[engine->id].ring;
-	if (ring == NULL) {
-		ring = engine->get_ring(engine, ctx);
-		if (IS_ERR(ring))
-			return ERR_CAST(ring);
-
-		ctx->ring[engine->id].ring = ring;
-	}
-
-	rq = kzalloc(sizeof(*rq), GFP_KERNEL);
-	if (rq == NULL)
-		return ERR_PTR(-ENOMEM);
-
-	kref_init(&rq->kref);
-	INIT_LIST_HEAD(&rq->vmas);
-	INIT_LIST_HEAD(&rq->breadcrumb_link);
-
-	rq->i915 = engine->i915;
-	rq->ring = ring;
-	rq->engine = engine;
-
-	rq->reset_counter = atomic_read(&rq->i915->gpu_error.reset_counter);
-	if (rq->reset_counter & (I915_RESET_IN_PROGRESS_FLAG | I915_WEDGED)) {
-		ret = rq->reset_counter & I915_WEDGED ? -EIO : -EAGAIN;
-		goto err;
-	}
-
-	rq->seqno = next_seqno(rq->i915);
-	memcpy(rq->semaphore, engine->semaphore.sync, sizeof(rq->semaphore));
-	for (n = 0; n < ARRAY_SIZE(rq->semaphore); n++)
-		if (__i915_seqno_passed(rq->semaphore[n], rq->seqno))
-			rq->semaphore[n] = 0;
-	rq->head = ring->tail;
-	rq->outstanding = true;
-	rq->pending_flush = ring->pending_flush;
-
-	rq->ctx = ctx;
-	i915_gem_context_reference(rq->ctx);
-
-	ret = i915_request_switch_context(rq);
-	if (ret)
-		goto err_ctx;
-
-	return rq;
-
-err_ctx:
-	i915_gem_context_unreference(ctx);
-err:
-	kfree(rq);
-	return ERR_PTR(ret);
 }
 
 struct i915_gem_request *
@@ -2292,22 +2384,13 @@ static void intel_engine_clear_rings(struct intel_engine_cs *engine)
 			ring->space = intel_ring_space(ring);
 		}
 
-		if (ring->last_context != NULL) {
-			struct drm_i915_gem_object *obj;
-
-			obj = ring->last_context->ring[engine->id].state;
-			if (obj)
-				i915_gem_object_ggtt_unpin(obj);
-
-			if (ring->last_context->ppgtt) {
-				obj = ring->last_context->ppgtt->state;
-				i915_gem_object_ggtt_unpin(obj);
-			}
-
-			ring->last_context = NULL;
-		}
-
 		ring->pending_flush = 0;
+	}
+
+	if (engine->last_context) {
+		engine->unpin_context(engine, engine->last_context);
+		i915_gem_context_unreference(engine->last_context);
+		engine->last_context = NULL;
 	}
 }
 

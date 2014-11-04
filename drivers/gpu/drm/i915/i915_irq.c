@@ -2669,13 +2669,9 @@ engine_idle(struct intel_engine_cs *engine)
 	bool ret = true;
 
 	spin_lock(&engine->lock);
-	if (engine->last_request) {
-		/* poke to make sure we retire before we wake up again */
-		queue_delayed_work(engine->i915->wq,
-				   &engine->i915->mm.retire_work,
-				   round_jiffies_up_relative(DRM_I915_HANGCHECK_JIFFIES/2));
-		ret = __i915_request_complete__wa(engine->last_request);
-	}
+	if (engine->last_request &&
+	    !__i915_request_complete__wa(engine->last_request))
+		ret = engine->is_idle(engine);
 	spin_unlock(&engine->lock);
 
 	return ret;

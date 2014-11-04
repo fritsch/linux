@@ -90,21 +90,6 @@
 #include "i915_drv.h"
 #include "i915_trace.h"
 
-/* This is a HW constraint. The value below is the largest known requirement
- * I've seen in a spec to date, and that was a workaround for a non-shipping
- * part. It should be safe to decrease this, but it's more future proof as is.
- */
-#define GEN6_CONTEXT_ALIGN (64<<10)
-#define GEN7_CONTEXT_ALIGN 4096
-
-static size_t get_context_alignment(struct drm_i915_private *i915)
-{
-	if (IS_GEN6(i915))
-		return GEN6_CONTEXT_ALIGN;
-
-	return GEN7_CONTEXT_ALIGN;
-}
-
 static int get_context_size(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -144,18 +129,14 @@ void __i915_gem_context_free(struct kref *ctx_ref)
 {
 	struct intel_context *ctx =
 		container_of(ctx_ref, typeof(*ctx), ref);
+	struct intel_engine_cs *engine;
 	int i;
 
 	DRM_DEBUG_DRIVER("HW context %d freed\n", ctx->user_handle);
-
 	trace_i915_context_free(ctx);
-	for (i = 0; i < I915_NUM_ENGINES; i++) {
-		if (ctx->ring[i].ring != NULL)
-			ctx->ring[i].ring->engine->put_ring(ctx->ring[i].ring, ctx);
 
-		if (ctx->ring[i].state != NULL)
-			drm_gem_object_unreference(&ctx->ring[i].state->base);
-	}
+	for_each_engine(engine, ctx->i915, i)
+		engine->free_context(engine, ctx);
 
 	i915_vm_put(&ctx->ppgtt->base);
 
@@ -218,7 +199,7 @@ i915_gem_create_context(struct drm_device *dev,
 		struct drm_i915_gem_object *obj;
 
 		if (is_default) {
-			obj = dev_priv->default_context->ring[RCS].state;
+			obj = RCS_ENGINE(dev_priv)->default_context->ring[RCS].state;
 			drm_gem_object_reference(&obj->base);
 		} else
 			obj = i915_gem_alloc_context_obj(dev, dev_priv->hw_context_size);
@@ -276,7 +257,7 @@ int i915_gem_context_init(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_context *ctx;
-	int i, ret;
+	int i;
 
 	if (RCS_ENGINE(dev_priv)->execlists_enabled) {
 		/* NB: intentionally left blank. We will allocate our own
@@ -303,48 +284,32 @@ int i915_gem_context_init(struct drm_device *dev)
 		return PTR_ERR(ctx);
 	}
 
-	if (dev_priv->hw_context_size) {
-		/* We may need to do things with the shrinker which
-		 * require us to immediately switch back to the default
-		 * context. This can cause a problem as pinning the
-		 * default context also requires GTT space which may not
-		 * be available. To avoid this we always pin the default
-		 * context.
-		 */
-		ret = i915_gem_object_ggtt_pin(ctx->ring[RCS].state,
-					       get_context_alignment(dev_priv),
-					       0);
-		if (ret) {
-			DRM_ERROR("Failed to pin global default context\n");
-			i915_gem_context_unreference(ctx);
-			return ret;
-		}
-	}
-
-	if (ctx->ppgtt) {
-		ret = i915_gem_object_ggtt_pin(ctx->ppgtt->state,
-					       ctx->ppgtt->alignment,
-					       0);
-		if (ret) {
-			DRM_ERROR("Failed to pin global default ppgtt\n");
-			if (dev_priv->hw_context_size)
-				i915_gem_object_ggtt_unpin(ctx->ring[RCS].state);
-			i915_gem_context_unreference(ctx);
-			return ret;
-		}
-	}
-
+	/* We may need to do things with the shrinker which
+	 * require us to immediately switch back to the default
+	 * context. This can cause a problem as pinning the
+	 * default context also requires GTT space which may not
+	 * be available. To avoid this we always pin the default
+	 * context.
+	 */
 	for (i = 0; i < I915_NUM_ENGINES; i++) {
 		struct intel_engine_cs *engine = &dev_priv->engine[i];
+		struct intel_ringbuffer *ring;
 
 		if (engine->i915 == NULL)
 			continue;
 
 		engine->default_context = ctx;
 		i915_gem_context_reference(ctx);
-	}
 
-	dev_priv->default_context = ctx;
+		ring = engine->pin_context(engine, ctx);
+		if (IS_ERR(ring)) {
+			DRM_ERROR("Failed to pin global default context (%s)\n",
+				  engine->name);
+			i915_gem_context_unreference(ctx);
+			return PTR_ERR(ring);
+		}
+	}
+	i915_gem_context_unreference(ctx);
 
 	DRM_DEBUG_DRIVER("%s context support initialized\n",
 			 RCS_ENGINE(dev_priv)->execlists_enabled ? "LR" :
@@ -359,27 +324,17 @@ void i915_gem_context_fini(struct drm_device *dev)
 	int i;
 
 	if (dev_priv->hw_context_size)
-		/* The only known way to stop the gpu from accessing the hw context is
-		 * to reset it. Do this as the very last operation to avoid confusing
-		 * other code, leading to spurious errors. */
+		/* The only known way to stop the gpu from accessing
+		 * the hw context is to reset it. Do this as the very
+		 * last operation to avoid confusing other code,
+		 * leading to spurious errors.
+		 */
 		intel_gpu_reset(dev);
 
 	for_each_engine(engine, dev_priv, i) {
+		engine->unpin_context(engine, engine->default_context);
 		i915_gem_context_unreference(engine->default_context);
 		engine->default_context = NULL;
-	}
-
-	if (dev_priv->default_context) {
-		struct intel_context *ctx = dev_priv->default_context;
-
-		if (dev_priv->hw_context_size)
-			i915_gem_object_ggtt_unpin(ctx->ring[RCS].state);
-
-		if (ctx->ppgtt)
-			i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
-
-		i915_gem_context_unreference(ctx);
-		dev_priv->default_context = NULL;
 	}
 }
 
@@ -395,7 +350,7 @@ int i915_gem_context_enable(struct drm_i915_private *dev_priv)
 		if (HAS_L3_DPF(dev_priv))
 			ctx->remap_slice = (1 << NUM_L3_SLICES(dev_priv)) - 1;
 
-		rq = intel_engine_alloc_request(engine, ctx);
+		rq = i915_request_create(ctx, engine);
 		if (IS_ERR(rq)) {
 			ret = PTR_ERR(rq);
 			goto err;
@@ -436,6 +391,7 @@ static int context_idr_cleanup(int id, void *p, void *data)
 			vma = list_first_entry(list, typeof(*vma), vm_link);
 			list_del_init(&vma->vm_link);
 			list_del_init(&vma->obj_link);
+			i915_vma_put(vma);
 		}
 
 		/* Drop active references to this vm upon retire */
@@ -616,50 +572,13 @@ static int l3_remap(struct i915_gem_request *rq, int slice)
 int i915_request_switch_context(struct i915_gem_request *rq)
 {
 	struct intel_context *to = rq->ctx;
-	struct intel_engine_context *ctx = &to->ring[rq->engine->id];
-	struct intel_context *from;
+	struct intel_context *from = rq->engine->last_context;
 	int ret, i;
 
 	lockdep_assert_held(&rq->i915->dev->struct_mutex);
 
-	if (rq->ring->last_context == to && !to->remap_slice)
+	if (from == to && !to->remap_slice)
 		return 0;
-
-	if (ctx->state != NULL) {
-		/* Trying to pin first makes error handling easier. */
-		ret = i915_gem_object_ggtt_pin(ctx->state,
-					       get_context_alignment(rq->i915),
-					       0);
-		if (ret)
-			return ret;
-
-		/*
-		 * Clear this page out of any CPU caches for coherent swap-in/out. Note
-		 * that thanks to write = false in this call and us not setting any gpu
-		 * write domains when putting a context object onto the active list
-		 * (when switching away from it), this won't block.
-		 *
-		 * XXX: We need a real interface to do this instead of trickery.
-		 */
-		ret = i915_gem_object_set_to_gtt_domain(ctx->state, false);
-		if (ret)
-			goto unpin_ctx;
-	}
-
-	if (to->ppgtt) {
-		ret = i915_gem_object_ggtt_pin(to->ppgtt->state,
-					       to->ppgtt->alignment,
-					       0);
-		if (ret)
-			goto unpin_ctx;
-	}
-
-	/*
-	 * Pin can switch back to the default context if we end up calling into
-	 * evict_everything - as a last ditch gtt defrag effort that also
-	 * switches to the default context. Hence we need to reload from here.
-	 */
-	from = rq->ring->last_context;
 
 	/* With execlists enabled, the ring, vm and logical state are
 	 * interwined and we do not need to explicitly load the mm or
@@ -669,6 +588,8 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 	 * whilst in use and reload the l3 mapping if it has changed.
 	 */
 	if (!rq->engine->execlists_enabled) {
+		struct intel_engine_context *ctx = &to->ring[rq->engine->id];
+
 		if (ctx->state != (from ? from->ring[rq->engine->id].state : NULL)) {
 			u32 flags;
 
@@ -686,7 +607,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 			trace_i915_gem_ring_switch_context(rq->engine, to, flags);
 			ret = mi_set_context(rq, ctx, flags);
 			if (ret)
-				goto unpin_mm;
+				return ret;
 
 			rq->pending_flush &= ~I915_COMMAND_BARRIER;
 		}
@@ -695,7 +616,7 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 			trace_i915_gem_request_switch_mm(rq);
 			ret = to->ppgtt->switch_mm(rq, to->ppgtt);
 			if (ret)
-				goto unpin_mm;
+				return ret;
 		}
 	}
 
@@ -714,43 +635,11 @@ int i915_request_switch_context(struct i915_gem_request *rq)
 	 * is a bit suboptimal because the retiring can occur simply after the
 	 * MI_SET_CONTEXT instead of when the next seqno has completed.
 	 */
-	if (from && from->ring[rq->engine->id].state) {
-		struct drm_i915_gem_object *from_obj = from->ring[rq->engine->id].state;
-
-		from_obj->base.pending_read_domains = I915_GEM_DOMAIN_INSTRUCTION;
-		/* obj is kept alive until the next request by its active ref */
-		drm_gem_object_reference(&from_obj->base);
-		i915_request_add_vma(rq, i915_gem_obj_get_ggtt(from_obj), 0);
-
-		/* As long as MI_SET_CONTEXT is serializing, ie. it flushes the
-		 * whole damn pipeline, we don't need to explicitly mark the
-		 * object dirty. The only exception is that the context must be
-		 * correct in case the object gets swapped out. Ideally we'd be
-		 * able to defer doing this until we know the object would be
-		 * swapped, but there is no way to do that yet.
-		 */
-		from_obj->dirty = 1;
-	}
-
-	if (from && from->ppgtt) {
-		struct drm_i915_gem_object *from_obj = from->ppgtt->state;
-
-		from_obj->base.pending_read_domains = I915_GEM_DOMAIN_INSTRUCTION;
-		/* obj is kept alive until the next request by its active ref */
-		drm_gem_object_reference(&from_obj->base);
-		i915_request_add_vma(rq, i915_gem_obj_get_ggtt(from_obj), 0);
-	}
+	if (from)
+		rq->engine->add_context(rq, from);
 
 	rq->has_ctx_switch = true;
 	return 0;
-
-unpin_mm:
-	if (to->ppgtt)
-		i915_gem_object_ggtt_unpin(to->ppgtt->state);
-unpin_ctx:
-	if (ctx->state)
-		i915_gem_object_ggtt_unpin(ctx->state);
-	return ret;
 }
 
 /**
@@ -759,41 +648,15 @@ unpin_ctx:
  */
 void i915_request_switch_context__commit(struct i915_gem_request *rq)
 {
-	struct intel_context *ctx;
-
 	lockdep_assert_held(&rq->i915->dev->struct_mutex);
 
 	if (!rq->has_ctx_switch)
 		return;
 
-	ctx = rq->ring->last_context;
-	if (ctx && ctx->ppgtt)
-		i915_gem_object_ggtt_unpin(ctx->ppgtt->state);
-	if (ctx && ctx->ring[rq->engine->id].state)
-		i915_gem_object_ggtt_unpin(ctx->ring[rq->engine->id].state);
-
-	ctx = rq->ctx;
-	ctx->remap_slice &= ~rq->remap_l3;
-	ctx->ring[rq->engine->id].initialized = true;
+	rq->ctx->remap_slice &= ~rq->remap_l3;
+	rq->ctx->ring[rq->engine->id].initialized = true;
 
 	rq->has_ctx_switch = false;
-}
-
-/**
- * i915_request_switch_context__undo() - unwind the context sitch
- * @rq: request for which we have executed the context switch
- */
-void i915_request_switch_context__undo(struct i915_gem_request *rq)
-{
-	lockdep_assert_held(&rq->i915->dev->struct_mutex);
-
-	if (!rq->has_ctx_switch)
-		return;
-
-	if (rq->ctx->ppgtt)
-		i915_gem_object_ggtt_unpin(rq->ctx->ppgtt->state);
-	if (rq->ctx->ring[rq->engine->id].state)
-		i915_gem_object_ggtt_unpin(rq->ctx->ring[rq->engine->id].state);
 }
 
 static bool contexts_enabled(struct drm_i915_private *dev_priv)
@@ -953,7 +816,7 @@ int i915_gem_context_dump_ioctl(struct drm_device *dev, void *data,
 		struct i915_gem_request *rq;
 		int n = 0;
 
-		rq = intel_engine_alloc_request(rcs, ctx);
+		rq = i915_request_create(ctx, rcs);
 		if (IS_ERR(rq))
 			ret = PTR_ERR(rq);
 

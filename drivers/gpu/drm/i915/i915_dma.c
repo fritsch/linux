@@ -942,7 +942,9 @@ out_mtrrfree:
 	arch_phys_wc_del(dev_priv->gtt.mtrr);
 	io_mapping_free(dev_priv->gtt.mappable);
 out_gtt:
+	mutex_lock(&dev->struct_mutex);
 	i915_global_gtt_cleanup(dev);
+	mutex_unlock(&dev->struct_mutex);
 out_regs:
 	intel_uncore_fini(dev);
 	pci_iounmap(dev->pdev, dev_priv->regs);
@@ -1020,7 +1022,6 @@ int i915_driver_unload(struct drm_device *dev)
 		mutex_lock(&dev->struct_mutex);
 		i915_gem_fini(dev);
 		mutex_unlock(&dev->struct_mutex);
-		i915_gem_cleanup_stolen(dev);
 	}
 
 	intel_teardown_gmbus(dev);
@@ -1030,7 +1031,10 @@ int i915_driver_unload(struct drm_device *dev)
 	destroy_workqueue(dev_priv->wq);
 	pm_qos_remove_request(&dev_priv->pm_qos);
 
+	mutex_lock(&dev->struct_mutex);
 	i915_global_gtt_cleanup(dev);
+	i915_gem_cleanup_stolen(dev);
+	mutex_unlock(&dev->struct_mutex);
 
 	intel_uncore_fini(dev);
 	if (dev_priv->regs != NULL)

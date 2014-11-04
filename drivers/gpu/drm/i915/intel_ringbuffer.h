@@ -86,14 +86,13 @@ struct intel_context;
 struct intel_engine_cs;
 
 struct intel_ringbuffer {
-	struct intel_context *last_context;
-
 	struct intel_engine_cs *engine;
 	struct intel_context *ctx;
 	struct list_head engine_link;
 
 	struct drm_i915_gem_object *obj;
 	void __iomem *virtual_start;
+	uint32_t ggtt_offset;
 
 	/**
 	 * List of breadcrumbs associated with GPU requests currently
@@ -121,6 +120,7 @@ struct intel_ringbuffer {
 	int breadcrumb_tail;
 
 	unsigned pending_flush:4;
+	unsigned iomap:1;
 };
 
 struct intel_engine_cs {
@@ -152,10 +152,9 @@ struct intel_engine_cs {
 	struct list_head requests;
 	struct list_head pending, submitted;
 	struct i915_gem_request *last_request;
+	struct intel_context *last_context;
 
 	struct intel_hw_status_page status_page;
-
-	struct intel_ringbuffer *legacy_ring;
 
 	unsigned irq_refcount; /* protected by i915->irq_lock */
 	u32		irq_enable_mask; /* bitmask to enable ring interrupt */
@@ -164,12 +163,6 @@ struct intel_engine_cs {
 	void		(*irq_get)(struct intel_engine_cs *engine);
 	void		(*irq_barrier)(struct intel_engine_cs *engine);
 	void		(*irq_put)(struct intel_engine_cs *engine);
-
-	struct intel_ringbuffer *
-			(*get_ring)(struct intel_engine_cs *engine,
-				    struct intel_context *ctx);
-	void		(*put_ring)(struct intel_ringbuffer *ring,
-				    struct intel_context *ctx);
 
 	void		(*retire)(struct intel_engine_cs *engine,
 				  u32 seqno);
@@ -193,11 +186,23 @@ struct intel_engine_cs {
 #define I915_DISPATCH_PINNED 0x2
 	int __must_check (*emit_breadcrumb)(struct i915_gem_request *rq);
 
+	struct intel_ringbuffer *  __must_check
+		(*pin_context)(struct intel_engine_cs *engine,
+			       struct intel_context *ctx);
+	void (*add_context)(struct i915_gem_request *rq,
+			    struct intel_context *ctx);
+	void (*unpin_context)(struct intel_engine_cs *engine,
+			      struct intel_context *ctx);
+	void (*free_context)(struct intel_engine_cs *engine,
+			     struct intel_context *ctx);
+
+
 	int __must_check (*add_request)(struct i915_gem_request *rq);
 	void		(*write_tail)(struct intel_engine_cs *engine,
 				      u32 value);
 
 	bool (*is_complete)(struct i915_gem_request *rq);
+	bool (*is_idle)(struct intel_engine_cs *engine);
 
 
 	/* GEN8 signal/wait table - never trust comments!
@@ -403,10 +408,6 @@ static inline int intel_ring_space(struct intel_ringbuffer *ring)
 				  ring->size, I915_RING_RSVD);
 }
 
-
-struct i915_gem_request * __must_check __attribute__((nonnull))
-intel_engine_alloc_request(struct intel_engine_cs *engine,
-			   struct intel_context *ctx);
 
 struct i915_gem_request *
 intel_engine_find_active_batch(struct intel_engine_cs *engine);
