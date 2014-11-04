@@ -35,7 +35,6 @@
 
 #include <linux/types.h> /* FIXME: kvm_para.h needs this */
 
-#include <linux/stop_machine.h>
 #include <linux/kvm_para.h>
 #include <linux/uaccess.h>
 #include <linux/module.h>
@@ -151,7 +150,7 @@ struct set_mtrr_data {
  *
  * Returns nothing.
  */
-static int mtrr_rendezvous_handler(void *info)
+static void mtrr_rendezvous_handler(void *info)
 {
 	struct set_mtrr_data *data = info;
 
@@ -174,7 +173,6 @@ static int mtrr_rendezvous_handler(void *info)
 	} else if (mtrr_aps_delayed_init || !cpu_online(smp_processor_id())) {
 		mtrr_if->set_all();
 	}
-	return 0;
 }
 
 static inline int types_compatible(mtrr_type type1, mtrr_type type2)
@@ -228,7 +226,7 @@ set_mtrr(unsigned int reg, unsigned long base, unsigned long size, mtrr_type typ
 				      .smp_type = type
 				    };
 
-	stop_machine(mtrr_rendezvous_handler, &data, cpu_online_mask);
+	on_each_cpu_mask(cpu_online_mask, mtrr_rendezvous_handler, &data, 1);
 }
 
 static void set_mtrr_from_inactive_cpu(unsigned int reg, unsigned long base,
@@ -240,8 +238,7 @@ static void set_mtrr_from_inactive_cpu(unsigned int reg, unsigned long base,
 				      .smp_type = type
 				    };
 
-	stop_machine_from_inactive_cpu(mtrr_rendezvous_handler, &data,
-				       cpu_callout_mask);
+	on_each_cpu_mask(cpu_callout_mask, mtrr_rendezvous_handler, &data, 1);
 }
 
 /**
