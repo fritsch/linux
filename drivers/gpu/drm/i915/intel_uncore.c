@@ -465,7 +465,6 @@ void gen6_gt_force_wake_get(struct drm_i915_private *dev_priv,
 	if (!dev_priv->uncore.funcs.force_wake_get)
 		return;
 
-	intel_runtime_pm_get(dev_priv);
 	WARN_ON(!pm_runtime_active(&dev_priv->dev->pdev->dev));
 
 	fw_domains &= dev_priv->uncore.fw_domains;
