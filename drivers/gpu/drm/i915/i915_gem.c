@@ -469,8 +469,6 @@ i915_gem_object_put_pages_phys(struct drm_i915_gem_object *obj)
 {
 	int ret;
 
-	BUG_ON(obj->madv == __I915_MADV_PURGED);
-
 	ret = i915_gem_object_set_to_cpu_domain(obj, true);
 	if (ret) {
 		/* In the event of a disaster, abandon all caches and
@@ -1992,8 +1990,6 @@ i915_gem_object_put_pages_gtt(struct drm_i915_gem_object *obj)
 	struct sg_page_iter sg_iter;
 	int ret;
 
-	BUG_ON(obj->madv == __I915_MADV_PURGED);
-
 	ret = i915_gem_object_set_to_cpu_domain(obj, true);
 	if (ret) {
 		/* In the event of a disaster, abandon all caches and
@@ -2039,6 +2035,7 @@ i915_gem_object_put_pages(struct drm_i915_gem_object *obj)
 		return -EBUSY;
 
 	BUG_ON(i915_gem_obj_bound_any(obj));
+	BUG_ON(obj->madv == __I915_MADV_PURGED);
 
 	/* ->put_pages might need to allocate memory for the bit17 swizzle
 	 * array, hence protect them from being reaped by removing them from gtt
@@ -2803,6 +2800,7 @@ int i915_vma_unbind(struct i915_vma *vma)
 		return -EBUSY;
 
 	BUG_ON(obj->pages == NULL);
+	BUG_ON(obj->madv == __I915_MADV_PURGED);
 
 	i915_vma_get(vma);
 
@@ -3895,6 +3893,9 @@ i915_vma_pin(struct i915_vma *vma, uint32_t alignment, uint64_t flags)
 
 	if (WARN_ON((flags & (PIN_MAPPABLE | PIN_GLOBAL)) == PIN_MAPPABLE))
 		return -EINVAL;
+
+	if (WARN_ON(vma->obj->madv == __I915_MADV_PURGED))
+		return -EFAULT;
 
 	RQ_BUG_ON(vma->vm->closed);
 
