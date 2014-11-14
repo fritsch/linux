@@ -357,6 +357,13 @@ gen7_render_ring_flush(struct intel_engine_cs *ring,
 		flags |= PIPE_CONTROL_QW_WRITE;
 		flags |= PIPE_CONTROL_GLOBAL_GTT_IVB;
 
+		/*
+		 * We are also used as barrier before a MI_SET_CONTEXT.
+		 * Make sure we do a fall pipeline stall before the implied
+		 * LRI of render state.
+		 */
+		flags |= PIPE_CONTROL_STALL_AT_SCOREBOARD;
+
 		/* Workaround: we must issue a pipe_control with CS-stall bit
 		 * set before a pipe_control command that has the state cache
 		 * invalidate bit set. */
