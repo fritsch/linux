@@ -1274,8 +1274,15 @@ static u32 vlv_c0_residency(struct drm_i915_private *dev_priv,
 	u32 render_count, media_count;
 	u32 elapsed_render, elapsed_media, elapsed_time;
 	u32 residency = 0;
+	int ret;
 
-	cz_ts = vlv_punit_read(dev_priv, PUNIT_REG_CZ_TIMESTAMP);
+	mutex_lock(&dev_priv->dpio_lock);
+	ret = vlv_sideband_rw(dev_priv, PCI_DEVFN(2, 0), IOSF_PORT_PUNIT,
+			0x06, 0xce, &cz_ts);
+	mutex_unlock(&dev_priv->dpio_lock);
+	if (WARN_ON(ret < 0))
+		 return dev_priv->rps.cur_freq;
+
 	cz_freq_khz = DIV_ROUND_CLOSEST(dev_priv->mem_freq * 1000, 4);
 
 	render_count = I915_READ(VLV_RENDER_C0_COUNT_REG);

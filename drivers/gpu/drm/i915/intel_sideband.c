@@ -39,8 +39,8 @@
 /* Private register write, double-word addressing, non-posted */
 #define SB_CRWRDA_NP	0x07
 
-static int vlv_sideband_rw(struct drm_i915_private *dev_priv, u32 devfn,
-			   u32 port, u32 opcode, u32 addr, u32 *val)
+int vlv_sideband_rw(struct drm_i915_private *dev_priv, u32 devfn,
+		    u32 port, u32 opcode, u32 addr, u32 *val)
 {
 	u32 cmd, be = 0xf, bar = 0;
 	bool is_read = (opcode == SB_MRD_NP || opcode == SB_CRRDDA_NP);
