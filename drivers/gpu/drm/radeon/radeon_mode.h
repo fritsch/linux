@@ -366,6 +366,7 @@ struct radeon_crtc {
 	u32 wm_low;
 	u32 wm_high;
 	struct drm_display_mode hw_mode;
+	enum radeon_output_csc output_csc;
 };
 
 struct radeon_encoder_primary_dac {
@@ -458,6 +459,7 @@ struct radeon_encoder {
 	int audio_polling_active;
 	bool is_ext_encoder;
 	u16 caps;
+	enum radeon_output_csc output_csc;
 };
 
 struct radeon_connector_atom_dig {
