@@ -103,6 +103,7 @@ static const struct drm_prop_enum_list broadcast_rgb_names[] = {
 	{ INTEL_BROADCAST_RGB_AUTO, "Automatic" },
 	{ INTEL_BROADCAST_RGB_FULL, "Full" },
 	{ INTEL_BROADCAST_RGB_LIMITED, "Limited 16:235" },
+	{ INTEL_BROADCAST_RGB_VIDEO, "Video 16:235 pass-through" },
 };
 
 void
