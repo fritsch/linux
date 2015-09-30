@@ -359,6 +359,12 @@ struct intel_crtc_state {
 	 */
 	bool limited_color_range;
 
+        /*
+         * Use reduced/limited/broadcast rgb range without compressing
+         *
+         */
+	bool video_color_range;
+
 	/* DP has a bunch of special case unfortunately, so mark the pipe
 	 * accordingly. */
 	bool has_dp_encoder;
@@ -659,6 +665,7 @@ struct intel_hdmi {
 	int ddc_bus;
 	uint32_t color_range;
 	bool color_range_auto;
+        bool color_range_video;
 	bool has_hdmi_sink;
 	bool has_audio;
 	enum hdmi_force_audio force_audio;
