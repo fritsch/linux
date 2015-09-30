@@ -3413,6 +3413,7 @@ int intel_freq_opcode(struct drm_i915_private *dev_priv, int val);
 #define INTEL_BROADCAST_RGB_AUTO 0
 #define INTEL_BROADCAST_RGB_FULL 1
 #define INTEL_BROADCAST_RGB_LIMITED 2
+#define INTEL_BROADCAST_RGB_VIDEO 3
 
 static inline uint32_t i915_vgacntrl_reg(struct drm_device *dev)
 {
