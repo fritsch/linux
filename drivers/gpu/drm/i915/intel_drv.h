@@ -555,6 +555,12 @@ struct intel_crtc_state {
 	 * driven by the pipe.
 	 */
 	unsigned int output_types;
+	/*
+	 *
+	 * Use reduced/limited/broadcast rgb range without compressing.
+	 *
+	 */
+	bool video_color_range;
 
 	/* Whether we should send NULL infoframes. Required for audio. */
 	bool has_hdmi_sink;
@@ -834,6 +840,7 @@ struct intel_hdmi {
 	} dp_dual_mode;
 	bool limited_color_range;
 	bool color_range_auto;
+	bool color_range_video;
 	bool has_hdmi_sink;
 	bool has_audio;
 	enum hdmi_force_audio force_audio;
