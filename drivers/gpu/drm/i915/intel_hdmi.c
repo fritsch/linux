@@ -462,7 +462,8 @@ static void intel_hdmi_set_avi_infoframe(struct drm_encoder *encoder,
 	}
 
 	if (intel_hdmi->rgb_quant_range_selectable) {
-		if (intel_crtc->config->limited_color_range)
+		if (intel_crtc->config->limited_color_range ||
+		    intel_crtc->config->video_color_range)
 			frame.avi.quantization_range =
 				HDMI_QUANTIZATION_RANGE_LIMITED;
 		else
@@ -1327,6 +1328,8 @@ bool intel_hdmi_compute_config(struct intel_encoder *encoder,
 		pipe_config->limited_color_range =
 			intel_hdmi->limited_color_range;
 	}
+	if (intel_hdmi->color_range_video)
+               pipe_config->video_color_range = true;
 
 	if (adjusted_mode->flags & DRM_MODE_FLAG_DBLCLK) {
 		pipe_config->pixel_multiplier = 2;
@@ -1583,25 +1586,35 @@ intel_hdmi_set_property(struct drm_connector *connector,
 	if (property == dev_priv->broadcast_rgb_property) {
 		bool old_auto = intel_hdmi->color_range_auto;
 		bool old_range = intel_hdmi->limited_color_range;
+		bool old_range_video = intel_hdmi->color_range_video;
 
 		switch (val) {
 		case INTEL_BROADCAST_RGB_AUTO:
 			intel_hdmi->color_range_auto = true;
+			intel_hdmi->color_range_video = false;
 			break;
 		case INTEL_BROADCAST_RGB_FULL:
 			intel_hdmi->color_range_auto = false;
 			intel_hdmi->limited_color_range = false;
+			intel_hdmi->color_range_video = false;
 			break;
 		case INTEL_BROADCAST_RGB_LIMITED:
 			intel_hdmi->color_range_auto = false;
 			intel_hdmi->limited_color_range = true;
+			intel_hdmi->color_range_video = false;
+			break;
+		case INTEL_BROADCAST_RGB_VIDEO:
+			intel_hdmi->color_range_auto = false;
+			intel_hdmi->limited_color_range = false;
+			intel_hdmi->color_range_video = true;
 			break;
 		default:
 			return -EINVAL;
 		}
 
 		if (old_auto == intel_hdmi->color_range_auto &&
-		    old_range == intel_hdmi->limited_color_range)
+		    old_range == intel_hdmi->limited_color_range &&
+		    old_range_video == intel_hdmi->color_range_video)
 			return 0;
 
 		goto done;
