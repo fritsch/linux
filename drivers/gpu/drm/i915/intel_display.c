@@ -12687,9 +12687,11 @@ compute_baseline_pipe_bpp(struct intel_crtc *crtc,
 			  struct intel_crtc_state *pipe_config)
 {
 	struct drm_device *dev = crtc->base.dev;
-	struct drm_atomic_state *state;
+	struct drm_atomic_state *state = pipe_config->base.state;
+
 	struct drm_connector *connector;
 	struct drm_connector_state *connector_state;
+	struct drm_plane_state *plane_state;
 	int bpp, i;
 
 	if ((IS_G4X(dev) || IS_VALLEYVIEW(dev) || IS_CHERRYVIEW(dev)))
@@ -12699,10 +12701,13 @@ compute_baseline_pipe_bpp(struct intel_crtc *crtc,
 	else
 		bpp = 8*3;
 
+	plane_state = drm_atomic_get_plane_state(state, crtc->base.primary);
+	if (plane_state->fb->depth > bpp)
+		bpp = 8*3;
 
+	DRM_DEBUG_KMS("initial pipeline bpp = %d (fb depth %d)\n",
+		      bpp, plane_state->fb->depth);
 	pipe_config->pipe_bpp = bpp;
-
-	state = pipe_config->base.state;
 
 	/* Clamp display bpp to EDID value */
 	for_each_connector_in_state(state, connector, connector_state, i) {
